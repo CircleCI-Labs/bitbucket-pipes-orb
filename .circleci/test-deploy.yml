@@ -1,0 +1,192 @@
+version: 2.1
+orbs:
+  # Your orb will be automatically injected here during the pipeline.
+  # Reference your orb's jobs and commands below as they will exist when built.
+  orb-tools: circleci/orb-tools@12.3.0
+  # The orb definition is intentionally not included here. It will be injected into the pipeline.
+  bitbucket: {}
+
+# Use this tag to ensure test jobs always run,
+# even though the downstream publish job will only run on release tags.
+filters: &filters
+  tags:
+    only: /.*/
+
+# Filter for release tags.
+release-filters: &release-filters
+  branches:
+    ignore: /.*/
+  tags:
+    only: /^v[0-9]+\.[0-9]+\.[0-9]+$/
+
+jobs:
+  # Confirms this orb's core assumption about vendor behavior: bitbucketpipelines/demo-pipe-bash
+  # (the pipe used as the credential-free example/test throughout this orb) genuinely fails when
+  # a required variable is missing, with no network egress either way. This is a meta-test of
+  # the vendor image, run without going through the orb at all, precisely because there is no
+  # way to make a CircleCI job that lets a step actually fail and still show green -- so this
+  # validates the assumption "no wrapping" is a promise about (a real failure really happens and
+  # really propagates) rather than the orb's own steps directly.
+  demo_pipe_confirms_required_var:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
+    steps:
+      - run:
+          name: Confirm demo-pipe-bash fails without NAME
+          command: |
+            if docker run --rm bitbucketpipelines/demo-pipe-bash:0.1.0; then
+              echo "Expected bitbucketpipelines/demo-pipe-bash:0.1.0 to fail without NAME set, but it exited 0." >&2
+              echo "Vendor behavior appears to have changed -- re-verify this orb's assumptions." >&2
+              exit 1
+            fi
+            echo "Confirmed: demo-pipe-bash fails as expected when a required variable is missing."
+            echo "This orb's run command applies no retry, no wrapping, and no assertion layer of its own, so that failure reaches the job unmodified."
+
+  # Round-trips the whole output-variables mechanism (create-output-file -> run ->
+  # collect-outputs) against a tiny image built on the fly, using the `pipe` job's pre-steps/
+  # post-steps hooks: pre-steps builds the image, post-steps asserts the pipe's output reached a
+  # native step via $BASH_ENV. No registry, no credentials -- only a public busybox base layer.
+  output_roundtrip_via_pre_post_steps:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
+    steps:
+      - bitbucket/pipe:
+          name: "Test output round-trip via a local image + pre/post-steps"
+          image: bitbucket-orb-test-pipe:local
+          pre-steps:
+            - run:
+                name: Build a local test pipe image
+                command: |
+                  mkdir -p /tmp/test-pipe-build
+                  {
+                    echo 'FROM busybox:1.36'
+                    echo 'CMD echo "PIPE_OUTPUT_GREETING=hello-from-pipe" >> "$BITBUCKET_PIPELINES_VARIABLES_PATH" && echo wrote-output'
+                  } > /tmp/test-pipe-build/Dockerfile
+                  docker build -t bitbucket-orb-test-pipe:local /tmp/test-pipe-build
+          post-steps:
+            - run:
+                name: Assert the pipe's output reached this native step
+                command: |
+                  if [ "${PIPE_OUTPUT_GREETING:-}" != "hello-from-pipe" ]; then
+                    echo "Expected PIPE_OUTPUT_GREETING=hello-from-pipe but got '${PIPE_OUTPUT_GREETING:-}'" >&2
+                    exit 1
+                  fi
+                  echo "Confirmed: the pipe's output-variables file reached this native step via \$BASH_ENV."
+
+  # Tests `map-env` in isolation (not via the `pipe` aggregate): checkout, map the CircleCI
+  # context onto BITBUCKET_* variables, then assert a handful of the mapping's entries directly
+  # against the CIRCLE_* variables they were derived from.
+  map_env_isolation:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
+    steps:
+      - checkout
+      - bitbucket/map-env
+      - run:
+          name: Assert the CIRCLE_* -> BITBUCKET_* mapping
+          command: |
+            if [ "${BITBUCKET_REPO_SLUG}" != "${CIRCLE_PROJECT_REPONAME}" ]; then
+              echo "BITBUCKET_REPO_SLUG (${BITBUCKET_REPO_SLUG}) != CIRCLE_PROJECT_REPONAME (${CIRCLE_PROJECT_REPONAME})" >&2
+              exit 1
+            fi
+            if [ "${BITBUCKET_COMMIT}" != "${CIRCLE_SHA1}" ]; then
+              echo "BITBUCKET_COMMIT (${BITBUCKET_COMMIT}) != CIRCLE_SHA1 (${CIRCLE_SHA1})" >&2
+              exit 1
+            fi
+            if [ "${BITBUCKET_CLONE_DIR}" != "/opt/atlassian/pipelines/agent/build" ]; then
+              echo "Expected the default BITBUCKET_CLONE_DIR, got '${BITBUCKET_CLONE_DIR}'" >&2
+              exit 1
+            fi
+            case "${BITBUCKET_REPO_UUID}" in
+              \{*\}) ;;
+              *)
+                echo "Expected a synthesized, curly-brace-wrapped BITBUCKET_REPO_UUID placeholder, got '${BITBUCKET_REPO_UUID}'" >&2
+                exit 1
+                ;;
+            esac
+            echo "Confirmed: map-env's CIRCLE_* -> BITBUCKET_* mapping looks correct."
+
+  # Tests the `pipe` command directly, inline among native steps (as opposed to the `pipe` job)
+  # -- this orb's other required entry point.
+  command_usage_inline:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
+    steps:
+      - checkout
+      - bitbucket/pipe:
+          image: bitbucketpipelines/demo-pipe-bash:0.1.0
+          variables: |
+            NAME=Command Form
+            DEBUG=true
+      - run:
+          name: Native step after the command-form pipe
+          command: echo "Command-form pipe usage completed; continuing with native CircleCI steps."
+
+workflows:
+  test-deploy:
+    jobs:
+      # Make sure to include "filters: *filters" in every test job you want to run as part of
+      # your deployment. Test the orb's commands in custom jobs and the orb's job directly.
+      - bitbucket/pipe:
+          name: "Test demo-pipe-bash success path"
+          image: bitbucketpipelines/demo-pipe-bash:0.1.0
+          variables: |
+            NAME=Mona Octocat
+            DEBUG=true
+          filters: *filters
+      - bitbucket/pipe:
+          name: "Testing Overriding Executor"
+          image: bitbucketpipelines/demo-pipe-bash:0.1.0
+          variables: |
+            NAME=Executor Override
+          executor:
+            name: bitbucket/default
+            image: ubuntu-2404:current
+            resource_class: medium
+            docker_layer_caching: false
+          filters: *filters
+      - demo_pipe_confirms_required_var:
+          filters: *filters
+      - output_roundtrip_via_pre_post_steps:
+          filters: *filters
+      - map_env_isolation:
+          filters: *filters
+      - command_usage_inline:
+          filters: *filters
+      # The orb must be re-packed for publishing, and saved to the workspace.
+      - orb-tools/pack:
+          filters: *filters
+          requires:
+            - "Test demo-pipe-bash success path"
+            - "Testing Overriding Executor"
+            - demo_pipe_confirms_required_var
+            - output_roundtrip_via_pre_post_steps
+            - map_env_isolation
+            - command_usage_inline
+      - orb-tools/publish:
+          name: "Publish Dev"
+          orb_name: cci-labs/bitbucket
+          vcs_type: << pipeline.project.type >>
+          pub_type: dev
+          # Ensure this job requires all test jobs and the pack job.
+          requires:
+            - orb-tools/pack
+          context: orb-publishing
+          release_environment: orbs-dev
+          github_token: GHI_TOKEN
+      - orb-tools/publish:
+          name: "Publish Production"
+          orb_name: cci-labs/bitbucket
+          vcs_type: << pipeline.project.type >>
+          pub_type: production
+          # Ensure this job requires all test jobs and the pack job.
+          requires:
+            - orb-tools/pack
+          context: orb-publishing
+          filters: *release-filters
+          release_environment: orbs-prod
+          github_token: GHI_TOKEN

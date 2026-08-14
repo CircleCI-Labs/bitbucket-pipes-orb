@@ -1,0 +1,33 @@
+description: >
+  Exports the CIRCLE_* -> BITBUCKET_* variable mapping into $BASH_ENV, so the `run` command's
+  `docker run` can pass it through to the pipe's container. See the README's mapping table for
+  what is real-usage-confirmed versus best-effort synthesis.
+
+parameters:
+  clone-dir:
+    type: string
+    default: /opt/atlassian/pipelines/agent/build
+    description: >
+      Value to map onto BITBUCKET_CLONE_DIR. Must match the `clone-dir` passed to the `run`
+      command -- this is the container-side path the workspace gets bind-mounted at.
+  extra-env-mapping:
+    type: string
+    default: ""
+    description: >
+      Multi-line BITBUCKET_VAR=value pairs to add on top of, or override entries in, the
+      built-in mapping (e.g. `BITBUCKET_DEPLOYMENT_ENVIRONMENT=staging`). Applied last, so these
+      win over the built-in table. Runs through `circleci env subst`, so values may reference
+      $OTHER_ENV_VARS already present in the job without those secrets ever entering this
+      parameter's own value.
+  step-name:
+    type: string
+    default: Map CircleCI context onto Bitbucket variables
+    description: Allows for customizing the name of this step.
+
+steps:
+  - run:
+      name: << parameters.step-name >>
+      environment:
+        ORB_VAL_CLONE_DIR: << parameters.clone-dir >>
+        ORB_VAL_EXTRA_ENV_MAPPING: << parameters.extra-env-mapping >>
+      command: <<include(scripts/map-env.sh)>>

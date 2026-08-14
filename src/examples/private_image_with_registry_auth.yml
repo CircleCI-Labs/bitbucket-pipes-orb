@@ -1,0 +1,19 @@
+description: |
+  Run a pipe published as a private Docker image, logging in to the registry first.
+  `registry-username`/`registry-password` name existing project or context env vars -- the
+  credentials themselves never appear in this config.
+
+usage:
+  version: 2.1
+  orbs:
+    bitbucket: cci-labs/bitbucket@x.y.z
+  workflows:
+    main:
+      jobs:
+        - bitbucket/pipe:
+            context: my-registry-creds # provides DOCKERHUB_USERNAME / DOCKERHUB_TOKEN
+            image: myorg/my-private-pipe:1.4.0
+            registry-username: DOCKERHUB_USERNAME
+            registry-password: DOCKERHUB_TOKEN
+            variables: |
+              SOME_INPUT=hello

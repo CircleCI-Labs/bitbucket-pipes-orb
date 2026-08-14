@@ -1,0 +1,13 @@
+version: 2.1
+
+description: |
+  Run a single Bitbucket Pipe -- any Docker image built to the Bitbucket Pipelines pipe
+  contract -- as one step inside an otherwise-native CircleCI job or workflow. Bitbucket
+  variables reach the pipe under their literal names (no prefix), CircleCI context is mapped
+  onto the BITBUCKET_* variables pipes actually read, and any KEY=value lines the pipe writes
+  to its output-variables file are exported back into $BASH_ENV so native CircleCI steps can
+  read them.
+
+display:
+  home_url: "https://bitbucket.org/product/features/pipelines/integrations"
+  source_url: "https://github.com/CircleCI-Labs/bitbucket-pipes-orb"

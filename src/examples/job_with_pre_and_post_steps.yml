@@ -1,0 +1,28 @@
+description: |
+  Use the `pipe` job's `pre-steps`/`post-steps` hooks to interleave native steps immediately
+  around the pipe, in a single job, without hand-assembling checkout/pipe/cleanup yourself. Any
+  output-variables the pipe writes are already exported into $BASH_ENV by the time `post-steps`
+  runs, so a native `post-steps` step can read them directly.
+
+usage:
+  version: 2.1
+  orbs:
+    bitbucket: cci-labs/bitbucket@x.y.z
+  workflows:
+    main:
+      jobs:
+        - bitbucket/pipe:
+            name: "Notify with a pipe, then act on its output natively"
+            image: bitbucketpipelines/demo-pipe-bash:0.1.0
+            variables: |
+              NAME=CircleCI
+            pre-steps:
+              - run:
+                  name: Native step before the pipe
+                  command: echo "About to run the pipe..."
+            post-steps:
+              - run:
+                  name: Native step after the pipe
+                  command: |
+                    echo "Pipe finished. Any KEY=value it wrote to its output-variables file"
+                    echo "is already exported here, e.g.: echo \"\$SOME_OUTPUT_VAR\""

@@ -1,0 +1,31 @@
+description: >
+  Default executor for running a Bitbucket Pipe. Must be a `machine` executor: pipes expect
+  their workspace bind-mounted at $BITBUCKET_CLONE_DIR, and CircleCI's `docker` executor (with
+  `setup_remote_docker`) runs its Docker daemon in a separate remote VM with no shared
+  filesystem, so bind mounts silently do not work there -- CircleCI's own docs say to use
+  `docker cp` instead. See the README's "What does not work" section for why this orb does not
+  offer a `docker` executor.
+
+parameters:
+  image:
+    type: string
+    default: ubuntu-2404:current
+    description: The machine image to run the pipe's Docker container on.
+  resource_class:
+    type: string
+    default: medium
+    description: >
+      The resource class for the executor. Bitbucket's own hosted runners default to 4 CPU /
+      8GB (their "1x" size); pick a resource class to match if a pipe is resource-hungry.
+  docker_layer_caching:
+    type: boolean
+    default: false
+    description: >
+      Enables CircleCI's Docker Layer Caching between builds. This is the orb's only image-pull
+      caching mechanism -- there is no separate CLI binary to download and cache here, unlike
+      other CI-ecosystem-bridge orbs, so no save_cache/restore_cache commands are shipped.
+
+machine:
+  image: << parameters.image >>
+  docker_layer_caching: << parameters.docker_layer_caching >>
+resource_class: << parameters.resource_class >>
