@@ -1,0 +1,37 @@
+description: |
+  Run a pipe that takes secrets and an array variable, using the `pipe` command inline among
+  native steps. `variables` uses Bitbucket's own literal variable-naming convention, including
+  the flat _COUNT/_0/_1/... encoding for array variables -- no orb-specific array syntax needed.
+  `$AWS_ACCESS_KEY_ID` etc. are resolved by `circleci env subst` against real context/project env
+  vars, so no secret value ever enters this config. Native steps before and after the pipe step
+  run exactly as they would in any other job -- this is the one-pipe-per-call, native-everywhere-
+  else model this orb is built around.
+
+usage:
+  version: 2.1
+  orbs:
+    bitbucket: cci-labs/bitbucket@x.y.z
+  jobs:
+    deploy:
+      machine:
+        image: ubuntu-2404:current
+      steps:
+        - checkout
+        - bitbucket/pipe:
+            image: bitbucketpipelines/aws-ecs-deploy:1.15.0
+            variables: |
+              AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+              AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+              AWS_DEFAULT_REGION=us-east-1
+              CLUSTER_NAME=my-cluster
+              SERVICE_NAME=my-service
+              EXTRA_ARGS_COUNT=2
+              EXTRA_ARGS_0=--force-new-deployment
+              EXTRA_ARGS_1=some value with spaces
+        - run:
+            name: Native step after the pipe
+            command: echo "Deployed; continuing with native CircleCI steps."
+  workflows:
+    main:
+      jobs:
+        - deploy

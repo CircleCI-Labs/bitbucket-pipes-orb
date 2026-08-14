@@ -1,0 +1,108 @@
+description: >
+  Runs the pipe's Docker image with `docker run`. The image reference passes through verbatim
+  (zero version-resolution logic of our own), the workspace is bind-mounted at the path pipes
+  expect, the pipe's `variables:` reach the container under their literal Bitbucket names, and
+  the pipe's real exit code and stderr are never wrapped, retried, or suppressed.
+
+parameters:
+  image:
+    type: string
+    description: >
+      The pipe's Docker image reference, passed to `docker run` verbatim (e.g.
+      `bitbucketpipelines/aws-ecs-deploy:1.15.0`). No version resolution is performed -- Docker's
+      own default (`:latest` when no tag is given) applies.
+  variables:
+    type: string
+    default: ""
+    description: >
+      The pipe's `variables:` block as multi-line KEY=value pairs, using Bitbucket's own literal
+      variable-naming convention (no prefix, no case change). Array variables use Bitbucket's
+      own flat indexed convention directly, e.g.:
+        EXTRA_ARGS_COUNT=2
+        EXTRA_ARGS_0=--verbose
+        EXTRA_ARGS_1=some value with spaces
+      Runs through `circleci env subst`, so values may reference $MY_SECRET without the secret
+      ever entering this parameter's own value.
+  clone-dir:
+    type: string
+    default: /opt/atlassian/pipelines/agent/build
+    description: >
+      Container-side path the checkout is bind-mounted at ($BITBUCKET_CLONE_DIR) -- the path
+      pipes expect their workspace to be at.
+  output-file:
+    type: string
+    default: /tmp/bitbucket-pipe-scratch/pipe-output.env
+    description: Host-side path of the pipe's output-variables file (see `create-output-file`).
+  pipe-storage-dir:
+    type: string
+    default: /tmp/bitbucket-pipe-scratch/storage
+    description: Host-side scratch directory mapped to BITBUCKET_PIPE_STORAGE_DIR.
+  pipe-shared-storage-dir:
+    type: string
+    default: /tmp/bitbucket-pipe-scratch/shared-storage
+    description: Host-side scratch directory mapped to BITBUCKET_PIPE_SHARED_STORAGE_DIR.
+  user:
+    type: string
+    default: ""
+    description: >
+      Optional `--user` value (e.g. `1000:1000`) for `docker run`. Left empty by default: pipe
+      containers run as root by default, matching Bitbucket's own real-world behavior. Forcing
+      non-root is not verified-safe across the pipe catalog -- only set this if you know the
+      specific pipe you're running tolerates it.
+  fix-permissions:
+    type: boolean
+    default: false
+    description: >
+      After the pipe container exits, chown the checkout back to the CircleCI user. Pipe
+      containers run as root by default, which can leave root-owned files in the workspace that
+      break later native steps on a real (Linux) machine executor. Off by default, matching
+      Bitbucket's own real-world root-by-default behavior; turn on if a specific pipe trips this.
+  extra-docker-args:
+    type: string
+    default: ""
+    description: >
+      Additional flags appended to the `docker run` invocation (e.g. `--network host --cap-add
+      SYS_PTRACE`), before the image reference. Simple whitespace-split -- no quoting support
+      for values containing spaces.
+  registry-username:
+    type: env_var_name
+    default: BITBUCKET_PIPE_REGISTRY_USERNAME
+    description: >
+      Name of the env var (project or context env var) holding the registry username for a
+      private image, if any. Left as its default, unset value this resolves to empty and
+      registry login is skipped.
+  registry-password:
+    type: env_var_name
+    default: BITBUCKET_PIPE_REGISTRY_PASSWORD
+    description: >
+      Name of the env var (project or context env var) holding the registry password/token for
+      a private image, if any. Registry login only runs when both this and registry-username
+      resolve to a non-empty value.
+  registry-server:
+    type: string
+    default: ""
+    description: >
+      Registry server/host to log in to (e.g. `123456789.dkr.ecr.us-east-1.amazonaws.com`).
+      Leave empty for Docker Hub.
+  step-name:
+    type: string
+    default: Run Bitbucket pipe
+    description: Allows for customizing the name of this step.
+
+steps:
+  - run:
+      name: << parameters.step-name >>
+      environment:
+        ORB_VAL_IMAGE: << parameters.image >>
+        ORB_VAL_VARIABLES: << parameters.variables >>
+        ORB_VAL_CLONE_DIR: << parameters.clone-dir >>
+        ORB_VAL_OUTPUT_FILE: << parameters.output-file >>
+        ORB_VAL_PIPE_STORAGE_DIR: << parameters.pipe-storage-dir >>
+        ORB_VAL_PIPE_SHARED_STORAGE_DIR: << parameters.pipe-shared-storage-dir >>
+        ORB_VAL_USER: << parameters.user >>
+        ORB_VAL_FIX_PERMISSIONS: << parameters.fix-permissions >>
+        ORB_VAL_EXTRA_DOCKER_ARGS: << parameters.extra-docker-args >>
+        ORB_VAL_REGISTRY_USERNAME: << parameters.registry-username >>
+        ORB_VAL_REGISTRY_PASSWORD: << parameters.registry-password >>
+        ORB_VAL_REGISTRY_SERVER: << parameters.registry-server >>
+      command: <<include(scripts/run-pipe.sh)>>

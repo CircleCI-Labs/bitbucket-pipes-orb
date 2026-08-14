@@ -1,0 +1,135 @@
+description: >
+  Runs one Bitbucket Pipe as a single step among your other native CircleCI steps: creates the
+  output-variables file, maps CircleCI's build context onto the BITBUCKET_* variables pipes
+  read, runs the pipe's Docker image, and exports anything the pipe wrote back into $BASH_ENV.
+  Layers the `create-output-file` / `map-env` / `run` / `collect-outputs` commands -- call those
+  directly instead if you need to interleave your own steps in between.
+
+parameters:
+  checkout:
+    type: boolean
+    default: true
+    description: Checkout the CircleCI repository before running the pipe.
+  image:
+    type: string
+    description: >
+      The pipe's Docker image reference, passed to `docker run` verbatim (e.g.
+      `bitbucketpipelines/aws-ecs-deploy:1.15.0`). No version resolution is performed -- Docker's
+      own default (`:latest` when no tag is given) applies.
+  variables:
+    type: string
+    default: ""
+    description: >
+      The pipe's `variables:` block as multi-line KEY=value pairs, using Bitbucket's own literal
+      variable-naming convention (no prefix, no case change). Array variables use Bitbucket's
+      own flat indexed convention directly, e.g.:
+        EXTRA_ARGS_COUNT=2
+        EXTRA_ARGS_0=--verbose
+        EXTRA_ARGS_1=some value with spaces
+      Runs through `circleci env subst`, so values may reference $MY_SECRET without the secret
+      ever entering this parameter's own value.
+  skip-map-env:
+    type: boolean
+    default: false
+    description: >
+      Skip mapping CircleCI's build context onto BITBUCKET_* variables. Most pipes -- even
+      "credential-free" ones -- read at least BITBUCKET_REPO_OWNER and crash without it; only
+      skip this if you're supplying everything the pipe needs yourself via `extra-env-mapping`
+      or `variables`.
+  extra-env-mapping:
+    type: string
+    default: ""
+    description: >
+      Multi-line BITBUCKET_VAR=value pairs to add on top of, or override entries in, the
+      built-in CIRCLE_*->BITBUCKET_* mapping. Applied last, so these win. Runs through
+      `circleci env subst`.
+  clone-dir:
+    type: string
+    default: /opt/atlassian/pipelines/agent/build
+    description: >
+      Container-side path the checkout is bind-mounted at ($BITBUCKET_CLONE_DIR) -- the path
+      pipes expect their workspace to be at.
+  output-file:
+    type: string
+    default: /tmp/bitbucket-pipe-scratch/pipe-output.env
+    description: Host-side path for the pipe's output-variables file.
+  pipe-storage-dir:
+    type: string
+    default: /tmp/bitbucket-pipe-scratch/storage
+    description: Host-side scratch directory mapped to BITBUCKET_PIPE_STORAGE_DIR.
+  pipe-shared-storage-dir:
+    type: string
+    default: /tmp/bitbucket-pipe-scratch/shared-storage
+    description: Host-side scratch directory mapped to BITBUCKET_PIPE_SHARED_STORAGE_DIR.
+  user:
+    type: string
+    default: ""
+    description: >
+      Optional `--user` value (e.g. `1000:1000`) for `docker run`. Left empty by default: pipe
+      containers run as root by default, matching Bitbucket's own real-world behavior.
+  fix-permissions:
+    type: boolean
+    default: false
+    description: >
+      After the pipe container exits, chown the checkout back to the CircleCI user, undoing
+      root-owned files the pipe container may have left behind. Off by default.
+  extra-docker-args:
+    type: string
+    default: ""
+    description: >
+      Additional flags appended to the `docker run` invocation, before the image reference.
+      Simple whitespace-split -- no quoting support for values containing spaces.
+  registry-username:
+    type: env_var_name
+    default: BITBUCKET_PIPE_REGISTRY_USERNAME
+    description: >
+      Name of the env var (project or context env var) holding the registry username for a
+      private image, if any. Left at its default, unset value this resolves to empty and
+      registry login is skipped.
+  registry-password:
+    type: env_var_name
+    default: BITBUCKET_PIPE_REGISTRY_PASSWORD
+    description: >
+      Name of the env var (project or context env var) holding the registry password/token for
+      a private image, if any.
+  registry-server:
+    type: string
+    default: ""
+    description: Registry server/host to log in to. Leave empty for Docker Hub.
+  step-name:
+    type: string
+    default: Run Bitbucket pipe
+    description: Allows for customizing the name of the `docker run` step specifically.
+
+steps:
+  - when:
+      condition: << parameters.checkout >>
+      steps:
+        - checkout
+  - create-output-file:
+      output-file: << parameters.output-file >>
+      pipe-storage-dir: << parameters.pipe-storage-dir >>
+      pipe-shared-storage-dir: << parameters.pipe-shared-storage-dir >>
+  - when:
+      condition:
+        not: << parameters.skip-map-env >>
+      steps:
+        - map-env:
+            clone-dir: << parameters.clone-dir >>
+            extra-env-mapping: << parameters.extra-env-mapping >>
+  - run-pipe:
+      image: << parameters.image >>
+      variables: << parameters.variables >>
+      clone-dir: << parameters.clone-dir >>
+      output-file: << parameters.output-file >>
+      pipe-storage-dir: << parameters.pipe-storage-dir >>
+      pipe-shared-storage-dir: << parameters.pipe-shared-storage-dir >>
+      user: << parameters.user >>
+      fix-permissions: << parameters.fix-permissions >>
+      extra-docker-args: << parameters.extra-docker-args >>
+      registry-username: << parameters.registry-username >>
+      registry-password: << parameters.registry-password >>
+      registry-server: << parameters.registry-server >>
+      step-name: << parameters.step-name >>
+  - collect-outputs:
+      output-file: << parameters.output-file >>

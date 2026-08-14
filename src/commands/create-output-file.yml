@@ -1,0 +1,33 @@
+description: >
+  Creates the file a pipe appends output-variable KEY=value lines to (the real Bitbucket
+  BITBUCKET_PIPELINES_VARIABLES_PATH mechanism) and the two pipe-to-pipe scratch directories some
+  pipes read directly, then exports all three paths into $BASH_ENV.
+
+parameters:
+  output-file:
+    type: string
+    default: /tmp/bitbucket-pipe-scratch/pipe-output.env
+    description: >
+      Host-side path for the pipe's output-variables file. Bind-mounted into the pipe's
+      container at this same path by the `run` command.
+  pipe-storage-dir:
+    type: string
+    default: /tmp/bitbucket-pipe-scratch/storage
+    description: Host-side scratch directory mapped to BITBUCKET_PIPE_STORAGE_DIR.
+  pipe-shared-storage-dir:
+    type: string
+    default: /tmp/bitbucket-pipe-scratch/shared-storage
+    description: Host-side scratch directory mapped to BITBUCKET_PIPE_SHARED_STORAGE_DIR.
+  step-name:
+    type: string
+    default: Create Bitbucket pipe output file
+    description: Allows for customizing the name of this step.
+
+steps:
+  - run:
+      name: << parameters.step-name >>
+      environment:
+        ORB_VAL_OUTPUT_FILE: << parameters.output-file >>
+        ORB_VAL_PIPE_STORAGE_DIR: << parameters.pipe-storage-dir >>
+        ORB_VAL_PIPE_SHARED_STORAGE_DIR: << parameters.pipe-shared-storage-dir >>
+      command: <<include(scripts/create-output-file.sh)>>
