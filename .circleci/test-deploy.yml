@@ -398,11 +398,19 @@ jobs:
   # Genuinely complex/high-value target, per the release-readiness brief: a real,
   # published, credential-free Atlassian pipe (git-secrets-scan, wrapping the real
   # `gitleaks` security scanner) that reads this orb's own real BITBUCKET_CLONE_DIR
-  # bind-mount and git history -- not a toy demo pipe. CREATE_REPORT=false skips the
-  # part of the pipe that would need real Bitbucket API credentials (Code Insights
-  # reports), which this bridge cannot provide; scanning itself needs none. Verified
-  # locally against this exact repo before adding here: the pipe exits 0 with no
-  # secrets found.
+  # bind-mount -- not a toy demo pipe. CREATE_REPORT=false skips the part of the pipe
+  # that would need real Bitbucket API credentials (Code Insights reports), which this
+  # bridge cannot provide; scanning itself needs none.
+  #
+  # GITLEAKS_COMMAND=dir (not the pipe's own default, "git"), found while verifying
+  # this against REAL CircleCI CI, not just locally: "git" mode walks git history via
+  # `gitleaks git`, which on this repo's real CircleCI checkout hit "Host key
+  # verification failed... could not fetch <sha> from promisor remote" -- CircleCI's
+  # checkout can leave a partial/promisor-remote clone that needs SSH access back to
+  # GitHub to fully materialize, which this container has no key for. "dir" mode scans
+  # the working tree's files directly and never touches git history, sidestepping that
+  # entirely -- confirmed locally against this exact repo (exit 0, no leaks) before
+  # re-verifying green on real CI.
   test_git_secrets_scan_complex_target:
     machine:
       image: ubuntu-2404:current
@@ -414,7 +422,8 @@ jobs:
           image: bitbucketpipelines/git-secrets-scan:3.2.0
           variables: |
             CREATE_REPORT=false
-            GITLEAKS_COMMAND=git
+            GITLEAKS_COMMAND=dir
+            GITLEAKS_EXTRA_ARGS=.
 
 workflows:
   test-deploy:

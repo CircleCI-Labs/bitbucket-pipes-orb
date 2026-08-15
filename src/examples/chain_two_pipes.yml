@@ -23,6 +23,8 @@ usage:
             checkout: false
             variables: |
               CREATE_REPORT=false
+              GITLEAKS_COMMAND=dir
+              GITLEAKS_EXTRA_ARGS=.
             output-file: /tmp/bitbucket-pipe/scan-output.env
         - bitbucket/pipe:
             image: bitbucketpipelines/slack-notify:2.2.1
