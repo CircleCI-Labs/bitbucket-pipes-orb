@@ -63,6 +63,32 @@ private images, array variables, and pre/post-step interleaving.
 - Runs on a `machine` executor. **Not** `docker` + `setup_remote_docker` -- see
   ["What does not work"](#what-does-not-work) for why.
 
+```mermaid
+flowchart TD
+    A[checkout] --> B["create-output-file<br/>output-variables file + pipe storage scratch dirs"]
+    B --> C["map-env<br/>CIRCLE_* -&gt; BITBUCKET_* into $BASH_ENV<br/>literal names, no prefix"]
+    C --> D["run-pipe<br/>docker run -e ... -v checkout:CLONE_DIR<br/>[optional registry login for private images]<br/>no failure wrapping: pipe's own exit/stderr reach the job"]
+    D --> E["collect-outputs<br/>read output file back, export verbatim into $BASH_ENV<br/>denylist blocks PATH/BASH_ENV/... hijack attempts"]
+    D --> F[store_test_results<br/>checkout root, default on]
+
+    style C fill:#4a4a8a,color:#fff
+    style D fill:#4a4a8a,color:#fff
+```
+
+**The two denylists worth remembering** (see "Bitbucket variables are literal" below for the full
+reasoning): a `variables:`/`extra-env-mapping:`/pipe-output line naming a reserved shell-control
+variable (`PATH`, `BASH_ENV`, ...) or one of the four paths this orb itself bind-mounts
+(`BITBUCKET_CLONE_DIR` and friends) is warned-and-skipped, never applied -- both denylists exist
+specifically because this orb's whole point is running third-party, potentially untrusted vendor
+images with literal, unprefixed variable names.
+
+**No vendor convenience-image executor here either, checked and deliberately skipped.** Every
+Bitbucket Pipe is already its own purpose-built image -- `run-pipe` just `docker run`s it, same
+structural story as the sibling `harness` orb. Atlassian's own `atlassian/default-image` (the
+*outer* Bitbucket Cloud build-step container, not something a Pipe runs inside) doesn't fix
+anything here since this orb never executes user code in that outer layer -- see "Test results
+and artifacts" and "What does not work" for the two places a real difference *does* show up.
+
 ## Bitbucket variables are literal -- no prefix
 
 Unlike this orb's sibling ecosystem-bridge orbs, a pipe's `variables:` become environment
@@ -166,6 +192,32 @@ upload the entire repository on every run -- a materially worse default than no 
 you know the specific pipe you're running deposits real output files at a predictable path inside
 the checkout, add your own `store_artifacts` step (or `post-steps:` on the `pipe` job) pointed at
 that path.
+
+**Matching Bitbucket Cloud's own default build-step tools, for a `pre-steps`/`post-steps` migrated
+from plain `script:` commands (not a Pipe):** if your old Bitbucket pipeline ran ordinary shell
+commands in Bitbucket Cloud's default container *around* a Pipe -- not the Pipe itself, which
+already carries its own tools -- and you want that same tool footprint (`docker-compose`, `ant`, a
+specific `node`/`python`) in a native CircleCI `pre-steps`/`post-steps` step, use Atlassian's own
+`atlassian/default-image` there:
+
+```yaml
+- bitbucket/pipe:
+    image: some/pipe
+    pre-steps:
+      - run:
+          name: A plain shell command that used to run in Bitbucket Cloud's own default container
+          # NEVER pin ":latest" here -- Atlassian's own Docker Hub page documents that
+          # ":latest" resolves to v1 (Ubuntu 14.04, 2014-era) for backward compatibility, not
+          # the current image. Pin an explicit major version instead.
+          command: docker run --rm -v "$(pwd):/work" -w /work atlassian/default-image:5 docker-compose version
+```
+
+This is a documentation/parity aid, not something this orb wires up itself: `atlassian/default-image`
+is Bitbucket Cloud's *outer* build-step container, and this orb's `run-pipe` never executes your
+code in that layer -- the Pipe's own image already carries whatever it needs. Checked directly
+against Docker Hub while researching this orb's vendor-image options: unlike the sibling `bitrise`
+orb (whose Steps genuinely run bare with nothing else providing a toolchain), there's no gap here
+for a default executor to fill.
 
 ## What does not work
 

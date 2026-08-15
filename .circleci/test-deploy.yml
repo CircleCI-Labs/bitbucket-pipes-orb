@@ -313,6 +313,109 @@ jobs:
             fi
             echo "OK: two chained bitbucket/pipe calls in one job kept independent output files uncorrupted, and \$BASH_ENV reflects the second (latest) call as documented."
 
+  # Gap-closing test, per the release-readiness audit: run-pipe.sh's private-registry
+  # login path had zero test coverage (only a documented example existed). Shims
+  # `docker` on PATH to record its own argv -- the same technique already used by
+  # test_variables_reserved_name_and_array_regression -- so this exercises run-pipe.sh's
+  # OWN login-command construction without needing a real registry or real credentials.
+  test_registry_login_path:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: No login attempted when registry-username/password are unset
+          command: |
+            set -euo pipefail
+            fakebin="$(mktemp -d)"
+            call_log="$(mktemp)"
+            printf '#!/bin/bash\necho "docker $*" >> "%s"\nexit 0\n' "${call_log}" > "${fakebin}/docker"
+            chmod +x "${fakebin}/docker"
+            outdir="$(mktemp -d)"
+
+            PATH="${fakebin}:${PATH}" \
+              ORB_VAL_IMAGE="test/image" \
+              ORB_VAL_VARIABLES="" \
+              ORB_VAL_CLONE_DIR="/opt/atlassian/pipelines/agent/build" \
+              ORB_VAL_OUTPUT_FILE="${outdir}/pipe-output.env" \
+              ORB_VAL_PIPE_STORAGE_DIR="${outdir}/storage" \
+              ORB_VAL_PIPE_SHARED_STORAGE_DIR="${outdir}/shared" \
+              ORB_VAL_USER="" \
+              ORB_VAL_FIX_PERMISSIONS="false" \
+              ORB_VAL_EXTRA_DOCKER_ARGS="" \
+              ORB_VAL_REGISTRY_USERNAME="BITBUCKET_PIPE_REGISTRY_USERNAME" \
+              ORB_VAL_REGISTRY_PASSWORD="BITBUCKET_PIPE_REGISTRY_PASSWORD" \
+              ORB_VAL_REGISTRY_SERVER="" \
+              bash src/scripts/run-pipe.sh
+
+            if grep -q "docker login" "${call_log}"; then
+              echo "FAIL: 'docker login' was invoked with no registry-username/password set:" >&2
+              cat "${call_log}" >&2
+              exit 1
+            fi
+            echo "OK: no login attempted when registry-username/registry-password resolve to nothing."
+      - run:
+          name: Login is invoked with the right args when registry-username/password are set
+          command: |
+            set -euo pipefail
+            fakebin="$(mktemp -d)"
+            call_log="$(mktemp)"
+            printf '#!/bin/bash\necho "docker $*" >> "%s"\nexit 0\n' "${call_log}" > "${fakebin}/docker"
+            chmod +x "${fakebin}/docker"
+            outdir="$(mktemp -d)"
+
+            PATH="${fakebin}:${PATH}" \
+              FAKE_REGISTRY_USER="produser" \
+              FAKE_REGISTRY_PASS="s3cr3t" \
+              ORB_VAL_IMAGE="test/image" \
+              ORB_VAL_VARIABLES="" \
+              ORB_VAL_CLONE_DIR="/opt/atlassian/pipelines/agent/build" \
+              ORB_VAL_OUTPUT_FILE="${outdir}/pipe-output.env" \
+              ORB_VAL_PIPE_STORAGE_DIR="${outdir}/storage" \
+              ORB_VAL_PIPE_SHARED_STORAGE_DIR="${outdir}/shared" \
+              ORB_VAL_USER="" \
+              ORB_VAL_FIX_PERMISSIONS="false" \
+              ORB_VAL_EXTRA_DOCKER_ARGS="" \
+              ORB_VAL_REGISTRY_USERNAME="FAKE_REGISTRY_USER" \
+              ORB_VAL_REGISTRY_PASSWORD="FAKE_REGISTRY_PASS" \
+              ORB_VAL_REGISTRY_SERVER="registry.example.com" \
+              bash src/scripts/run-pipe.sh
+
+            if ! grep -q "docker login registry.example.com --username produser --password-stdin" "${call_log}"; then
+              echo "FAIL: expected a 'docker login registry.example.com --username produser --password-stdin' call, got:" >&2
+              cat "${call_log}" >&2
+              exit 1
+            fi
+            # The password itself must never appear as a literal CLI arg (it's piped via stdin).
+            if grep -q "s3cr3t" "${call_log}"; then
+              echo "FAIL: the password leaked into the recorded docker invocation as a literal arg:" >&2
+              cat "${call_log}" >&2
+              exit 1
+            fi
+            echo "OK: registry login is invoked with --username/--password-stdin and the right server, with the password never appearing as a literal arg."
+
+  # Genuinely complex/high-value target, per the release-readiness brief: a real,
+  # published, credential-free Atlassian pipe (git-secrets-scan, wrapping the real
+  # `gitleaks` security scanner) that reads this orb's own real BITBUCKET_CLONE_DIR
+  # bind-mount and git history -- not a toy demo pipe. CREATE_REPORT=false skips the
+  # part of the pipe that would need real Bitbucket API credentials (Code Insights
+  # reports), which this bridge cannot provide; scanning itself needs none. Verified
+  # locally against this exact repo before adding here: the pipe exits 0 with no
+  # secrets found.
+  test_git_secrets_scan_complex_target:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
+    steps:
+      - checkout
+      - bitbucket/pipe:
+          checkout: false
+          image: bitbucketpipelines/git-secrets-scan:3.2.0
+          variables: |
+            CREATE_REPORT=false
+            GITLEAKS_COMMAND=git
+
 workflows:
   test-deploy:
     jobs:
@@ -380,6 +483,10 @@ workflows:
           filters: *filters
       - test_pipe_idempotency:
           filters: *filters
+      - test_registry_login_path:
+          filters: *filters
+      - test_git_secrets_scan_complex_target:
+          filters: *filters
       # The orb must be re-packed for publishing, and saved to the workspace.
       - orb-tools/pack:
           filters: *filters
@@ -394,6 +501,8 @@ workflows:
             - test_variables_reserved_name_and_array_regression
             - test_extra_env_mapping_reserved_name_regression
             - test_pipe_idempotency
+            - test_registry_login_path
+            - test_git_secrets_scan_complex_target
       - orb-tools/publish:
           name: "Publish Dev"
           orb_name: cci-labs/bitbucket

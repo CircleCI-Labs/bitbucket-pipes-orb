@@ -1,0 +1,39 @@
+description: >
+  Chain two Bitbucket Pipes in ONE job by calling the `bitbucket/pipe` command twice,
+  giving each call its own `output-file` so neither call's output-variables round-trip
+  clobbers the other's -- proven safe by this orb's own `test_pipe_idempotency` CI job.
+  `skip-map-env: true` on the second call skips redoing the (idempotent, but
+  unnecessary) CIRCLE_* -> BITBUCKET_* mapping the first call already did in this job.
+  This is the real shape a migrated Bitbucket pipeline with several `script:` entries
+  chaining Pipes together becomes on CircleCI: several `bitbucket/pipe` calls in one
+  job, not one call per job.
+
+usage:
+  version: 2.1
+  orbs:
+    bitbucket: cci-labs/bitbucket@x.y.z
+  jobs:
+    scan-then-notify:
+      machine:
+        image: ubuntu-2404:current
+      steps:
+        - checkout
+        - bitbucket/pipe:
+            image: bitbucketpipelines/git-secrets-scan:3.2.0
+            checkout: false
+            variables: |
+              CREATE_REPORT=false
+            output-file: /tmp/bitbucket-pipe/scan-output.env
+        - bitbucket/pipe:
+            image: bitbucketpipelines/slack-notify:2.2.1
+            checkout: false
+            skip-map-env: true
+            output-file: /tmp/bitbucket-pipe/notify-output.env
+            variables: |
+              WEBHOOK_URL=$SLACK_WEBHOOK
+              MESSAGE=Secret scan completed for $BITBUCKET_REPO_SLUG
+  workflows:
+    main:
+      jobs:
+        - scan-then-notify:
+            context: slack-notify-creds
