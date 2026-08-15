@@ -43,38 +43,6 @@ jobs:
             echo "Confirmed: demo-pipe-bash fails as expected when a required variable is missing."
             echo "This orb's run command applies no retry, no wrapping, and no assertion layer of its own, so that failure reaches the job unmodified."
 
-  # Round-trips the whole output-variables mechanism (create-output-file -> run ->
-  # collect-outputs) against a tiny image built on the fly, using the `pipe` job's pre-steps/
-  # post-steps hooks: pre-steps builds the image, post-steps asserts the pipe's output reached a
-  # native step via $BASH_ENV. No registry, no credentials -- only a public busybox base layer.
-  output_roundtrip_via_pre_post_steps:
-    machine:
-      image: ubuntu-2404:current
-    resource_class: medium
-    steps:
-      - bitbucket/pipe:
-          name: "Test output round-trip via a local image + pre/post-steps"
-          image: bitbucket-orb-test-pipe:local
-          pre-steps:
-            - run:
-                name: Build a local test pipe image
-                command: |
-                  mkdir -p /tmp/test-pipe-build
-                  {
-                    echo 'FROM busybox:1.36'
-                    echo 'CMD echo "PIPE_OUTPUT_GREETING=hello-from-pipe" >> "$BITBUCKET_PIPELINES_VARIABLES_PATH" && echo wrote-output'
-                  } > /tmp/test-pipe-build/Dockerfile
-                  docker build -t bitbucket-orb-test-pipe:local /tmp/test-pipe-build
-          post-steps:
-            - run:
-                name: Assert the pipe's output reached this native step
-                command: |
-                  if [ "${PIPE_OUTPUT_GREETING:-}" != "hello-from-pipe" ]; then
-                    echo "Expected PIPE_OUTPUT_GREETING=hello-from-pipe but got '${PIPE_OUTPUT_GREETING:-}'" >&2
-                    exit 1
-                  fi
-                  echo "Confirmed: the pipe's output-variables file reached this native step via \$BASH_ENV."
-
   # Tests `map-env` in isolation (not via the `pipe` aggregate): checkout, map the CircleCI
   # context onto BITBUCKET_* variables, then assert a handful of the mapping's entries directly
   # against the CIRCLE_* variables they were derived from.
@@ -151,7 +119,35 @@ workflows:
           filters: *filters
       - demo_pipe_confirms_required_var:
           filters: *filters
-      - output_roundtrip_via_pre_post_steps:
+      # Round-trips the whole output-variables mechanism (create-output-file -> run ->
+      # collect-outputs) against a tiny image built on the fly, using CircleCI's own built-in
+      # pre-steps/post-steps job-invocation arguments (available on every job, not orb-declared;
+      # these only apply when invoking a *job* from a workflow, not the `pipe` command from
+      # inside another job's `steps:`): pre-steps builds the image, post-steps asserts the pipe's
+      # output reached a native step via $BASH_ENV. No registry, no credentials -- only a public
+      # busybox base layer.
+      - bitbucket/pipe:
+          name: "Test output round-trip via a local image + pre/post-steps"
+          image: bitbucket-orb-test-pipe:local
+          pre-steps:
+            - run:
+                name: Build a local test pipe image
+                command: |
+                  mkdir -p /tmp/test-pipe-build
+                  {
+                    echo 'FROM busybox:1.36'
+                    echo 'CMD echo "PIPE_OUTPUT_GREETING=hello-from-pipe" >> "$BITBUCKET_PIPELINES_VARIABLES_PATH" && echo wrote-output'
+                  } > /tmp/test-pipe-build/Dockerfile
+                  docker build -t bitbucket-orb-test-pipe:local /tmp/test-pipe-build
+          post-steps:
+            - run:
+                name: Assert the pipe's output reached this native step
+                command: |
+                  if [ "${PIPE_OUTPUT_GREETING:-}" != "hello-from-pipe" ]; then
+                    echo "Expected PIPE_OUTPUT_GREETING=hello-from-pipe but got '${PIPE_OUTPUT_GREETING:-}'" >&2
+                    exit 1
+                  fi
+                  echo "Confirmed: the pipe's output-variables file reached this native step via \$BASH_ENV."
           filters: *filters
       - map_env_isolation:
           filters: *filters
@@ -164,7 +160,7 @@ workflows:
             - "Test demo-pipe-bash success path"
             - "Testing Overriding Executor"
             - demo_pipe_confirms_required_var
-            - output_roundtrip_via_pre_post_steps
+            - "Test output round-trip via a local image + pre/post-steps"
             - map_env_isolation
             - command_usage_inline
       - orb-tools/publish:

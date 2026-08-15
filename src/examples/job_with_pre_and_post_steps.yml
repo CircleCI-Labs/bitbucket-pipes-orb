@@ -1,6 +1,9 @@
 description: |
-  Use the `pipe` job's `pre-steps`/`post-steps` hooks to interleave native steps immediately
-  around the pipe, in a single job, without hand-assembling checkout/pipe/cleanup yourself. Any
+  Use CircleCI's own built-in `pre-steps`/`post-steps` job-invocation arguments (available on
+  every 2.1+ job, not something this orb adds) to interleave native steps around the pipe, in a
+  single job, without hand-assembling checkout/pipe/cleanup yourself. Note the platform's real
+  semantics: `pre-steps` run before *every* step in the job, including this job's own internal
+  `checkout` -- so don't rely on the repo being checked out yet inside `pre-steps`. Any
   output-variables the pipe writes are already exported into $BASH_ENV by the time `post-steps`
   runs, so a native `post-steps` step can read them directly.
 

@@ -1,7 +1,10 @@
 description: >
   Runs one Bitbucket Pipe as its own job, callable directly from a workflow. Same contract as
-  the `pipe` command, plus pre-steps/post-steps hooks for interleaving your own native steps
-  immediately before or after the pipe runs, in a job you don't have to hand-assemble yourself.
+  the `pipe` command. Like every CircleCI 2.1+ job, this job accepts the platform's own built-in
+  `pre-steps`/`post-steps` job-invocation arguments for interleaving your own native steps around
+  it -- pass them at the call site (e.g. `- bitbucket/pipe: {pre-steps: [...], ...}`), no orb-side
+  declaration needed. Note the platform's own semantics: pre-steps run before *every* step in
+  this job, including this job's own `checkout`, not just before the pipe -- see the README.
 
 parameters:
   executor:
@@ -12,14 +15,6 @@ parameters:
     type: boolean
     default: true
     description: Checkout the CircleCI repository before running the pipe.
-  pre-steps:
-    type: steps
-    default: []
-    description: Steps to run after checkout, before the pipe.
-  post-steps:
-    type: steps
-    default: []
-    description: Steps to run after the pipe (and after its outputs have been exported).
   image:
     type: string
     description: >
@@ -31,9 +26,12 @@ parameters:
     default: ""
     description: >
       The pipe's `variables:` block as multi-line KEY=value pairs, using Bitbucket's own literal
-      variable-naming convention (no prefix, no case change). Array variables use Bitbucket's
-      own flat indexed convention directly. Runs through `circleci env subst`, so values may
-      reference $MY_SECRET without the secret ever entering this parameter's own value.
+      variable-naming convention (no prefix, no case change). Array variables can be written
+      either as Bitbucket's own flat indexed convention typed out by hand, or as a bracket list
+      matching the exact syntax a Bitbucket pipeline author already writes
+      (SOME_VAR=['first', 'second']), which this orb flattens itself. Runs through `circleci env
+      subst`, so values may reference $MY_SECRET without the secret ever entering this
+      parameter's own value.
   skip-map-env:
     type: boolean
     default: false
@@ -112,7 +110,6 @@ steps:
       condition: << parameters.checkout >>
       steps:
         - checkout
-  - steps: << parameters.pre-steps >>
   - pipe:
       checkout: false
       image: << parameters.image >>
@@ -130,4 +127,3 @@ steps:
       registry-password: << parameters.registry-password >>
       registry-server: << parameters.registry-server >>
       step-name: << parameters.step-name >>
-  - steps: << parameters.post-steps >>

@@ -16,13 +16,13 @@ parameters:
     default: ""
     description: >
       The pipe's `variables:` block as multi-line KEY=value pairs, using Bitbucket's own literal
-      variable-naming convention (no prefix, no case change). Array variables use Bitbucket's
-      own flat indexed convention directly, e.g.:
-        EXTRA_ARGS_COUNT=2
-        EXTRA_ARGS_0=--verbose
-        EXTRA_ARGS_1=some value with spaces
-      Runs through `circleci env subst`, so values may reference $MY_SECRET without the secret
-      ever entering this parameter's own value.
+      variable-naming convention (no prefix, no case change). Array variables can be written
+      either as Bitbucket's own flat indexed convention typed out by hand (e.g.
+      SOME_VAR_COUNT=2 / SOME_VAR_0=first / SOME_VAR_1=second), or as a bracket list matching
+      the exact syntax a Bitbucket pipeline author already writes (SOME_VAR=['first', 'second']),
+      which this orb flattens into the indexed form itself. Runs through `circleci env subst`,
+      so values may reference $MY_SECRET without the secret ever entering this parameter's own
+      value.
   clone-dir:
     type: string
     default: /opt/atlassian/pipelines/agent/build

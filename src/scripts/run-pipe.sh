@@ -70,18 +70,65 @@ for var_name in "${BITBUCKET_CONTEXT_VARS[@]}"; do
     fi
 done
 
-# These four are always set explicitly (rather than relying on passthrough) since `run` owns the
-# paths it just bind-mounted above and must guarantee the container sees the matching values
-# even if `map-env` was skipped.
-DOCKER_ARGS+=(-e "BITBUCKET_CLONE_DIR=${ORB_VAL_CLONE_DIR}")
-DOCKER_ARGS+=(-e "BITBUCKET_PIPELINES_VARIABLES_PATH=${ORB_VAL_OUTPUT_FILE}")
-DOCKER_ARGS+=(-e "BITBUCKET_PIPE_STORAGE_DIR=${ORB_VAL_PIPE_STORAGE_DIR}")
-DOCKER_ARGS+=(-e "BITBUCKET_PIPE_SHARED_STORAGE_DIR=${ORB_VAL_PIPE_SHARED_STORAGE_DIR}")
+# Names `run` owns because it just bind-mounted the paths they point at -- a `variables:` line
+# naming one of these is silently ignored (warn-and-skip, same style as a malformed line) rather
+# than allowed to reach `docker run`, since Docker's own last-`-e`-wins behavior would otherwise
+# let it desync the container's belief about these paths from the actual bind-mount target (see
+# the README's "Bitbucket variables are literal" section for the documented tradeoff). This costs
+# nothing against the real contract: none of these four is a pipe-author-facing input variable on
+# real Bitbucket -- they're platform-set constants a pipe *reads*, never a `variables:` key a
+# pipeline author sets, so no real pipe example collides with this.
+ORB_RESERVED_CONTAINER_VARS=(
+    BITBUCKET_CLONE_DIR BITBUCKET_PIPELINES_VARIABLES_PATH
+    BITBUCKET_PIPE_STORAGE_DIR BITBUCKET_PIPE_SHARED_STORAGE_DIR
+)
+is_orb_reserved_container_var() {
+    local candidate="$1" reserved
+    for reserved in "${ORB_RESERVED_CONTAINER_VARS[@]}"; do
+        if [[ "${candidate}" == "${reserved}" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
 
-# --- The pipe's own `variables:` -- literal Bitbucket names, no prefix, no case change. Array
-#     variables use Bitbucket's own flat _COUNT/_0/_1/... convention already, so no special
-#     handling is needed for them beyond parsing plain KEY=value lines: every line is one env
-#     var, whatever its name looks like. ---
+# Parses a Bitbucket-style bracket-delimited list value (e.g. "['CAPABILITY_IAM',
+# 'CAPABILITY_AUTO_EXPAND']" or "[a, b]") -- the exact syntax a Bitbucket pipeline author already
+# writes for an array-typed `variables:` entry -- into the ARRAY_ITEMS global array. This lets
+# `run-pipe` do the _COUNT/_0/_1/... flattening real Bitbucket's own scheduler does invisibly,
+# instead of pushing that pipe-*author*-facing convention (documented for people writing a pipe's
+# entrypoint, not people using one) onto the CircleCI config author. Limitation, documented in
+# the README: a comma inside a quoted item is not supported -- it is still treated as an item
+# separator, since this is a plain split, not a full YAML/JSON parser.
+parse_bracket_list() {
+    local raw="$1" inner item trimmed
+    inner="${raw#\[}"
+    inner="${inner%\]}"
+    ARRAY_ITEMS=()
+    if [[ -z "${inner//[[:space:]]/}" ]]; then
+        return 0
+    fi
+    local old_ifs="${IFS}"
+    IFS=','
+    read -ra RAW_ITEMS <<< "${inner}"
+    IFS="${old_ifs}"
+    for item in "${RAW_ITEMS[@]}"; do
+        trimmed="${item#"${item%%[![:space:]]*}"}"
+        trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+        if [[ "${trimmed}" =~ ^\'(.*)\'$ ]]; then
+            trimmed="${BASH_REMATCH[1]}"
+        elif [[ "${trimmed}" =~ ^\"(.*)\"$ ]]; then
+            trimmed="${BASH_REMATCH[1]}"
+        fi
+        ARRAY_ITEMS+=("${trimmed}")
+    done
+}
+
+# --- The pipe's own `variables:` -- literal Bitbucket names, no prefix, no case change. A value
+#     can either be plain (KEY=value), one leg of Bitbucket's own flat _COUNT/_0/_1/... array
+#     convention typed out by hand, or -- for convenience -- a bracket list (KEY=['a', 'b']),
+#     which this script flattens into _COUNT/_0/_1/... itself. Either array spelling produces the
+#     identical container-side result. ---
 if [[ -n "${ORB_VAL_VARIABLES}" ]]; then
     if ! command -v circleci > /dev/null 2>&1; then
         echo "Error: the 'circleci' CLI is required to safely substitute \$VAR references in the 'variables' parameter (via 'circleci env subst') but was not found on PATH. CircleCI's machine executor images ship it preinstalled; if you're on a custom image, install the CircleCI CLI first." >&2
@@ -102,13 +149,38 @@ if [[ -n "${ORB_VAL_VARIABLES}" ]]; then
             continue
         fi
         KEY="${line%%=*}"
+        VALUE="${line#*=}"
         if [[ ! "${KEY}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
             echo "Warning: skipping 'variables' line with an invalid variable name: ${line}" >&2
             continue
         fi
-        DOCKER_ARGS+=(-e "${line}")
+        if is_orb_reserved_container_var "${KEY}"; then
+            echo "Warning: skipping 'variables' line naming the orb-managed variable '${KEY}'; this orb always sets it itself to match the workspace/output-file paths it just bind-mounted. No real Bitbucket pipe declares this as an input variable. See the README." >&2
+            continue
+        fi
+        if [[ "${VALUE}" == \[*\] ]]; then
+            parse_bracket_list "${VALUE}"
+            DOCKER_ARGS+=(-e "${KEY}_COUNT=${#ARRAY_ITEMS[@]}")
+            for i in "${!ARRAY_ITEMS[@]}"; do
+                DOCKER_ARGS+=(-e "${KEY}_${i}=${ARRAY_ITEMS[${i}]}")
+            done
+        else
+            DOCKER_ARGS+=(-e "${line}")
+        fi
     done <<< "${SUBST_VARIABLES}"
 fi
+
+# These four are always set explicitly (rather than relying on passthrough), and deliberately
+# *after* the `variables:` loop above so they always win Docker's last-`-e`-wins semantics for a
+# duplicate key (verified: `docker run --rm -e FOO=first -e FOO=second busybox sh -c 'echo $FOO'`
+# prints "second") -- `run` owns the paths it just bind-mounted and must guarantee the container
+# sees the matching values even if `map-env` was skipped or a `variables:` line collides. The
+# denylist above already rejects a colliding `variables:` line outright; this ordering is the
+# structural backstop for the same guarantee.
+DOCKER_ARGS+=(-e "BITBUCKET_CLONE_DIR=${ORB_VAL_CLONE_DIR}")
+DOCKER_ARGS+=(-e "BITBUCKET_PIPELINES_VARIABLES_PATH=${ORB_VAL_OUTPUT_FILE}")
+DOCKER_ARGS+=(-e "BITBUCKET_PIPE_STORAGE_DIR=${ORB_VAL_PIPE_STORAGE_DIR}")
+DOCKER_ARGS+=(-e "BITBUCKET_PIPE_SHARED_STORAGE_DIR=${ORB_VAL_PIPE_SHARED_STORAGE_DIR}")
 
 # --- Optional registry auth for private images. registry-username/registry-password are
 #     env_var_name parameters: their *value* is the NAME of an env var already present in the
