@@ -328,7 +328,7 @@ for a default executor to fill.
 | Name | Kind | What it does |
 |---|---|---|
 | `pipe` | command, job | The aggregate most users want: create-output-file -> map-env -> run-pipe -> collect-outputs -> store_test_results, in order. |
-| `create-output-file` | command | Creates the output-variables file + the two pipe-storage scratch dirs. |
+| `create-output-file` | command | Creates the output-variables file + the two pipe-storage scratch dirs. **Truncates the variables file on every call** -- so when chaining, give each pipe its own `output-file` rather than reusing one path (see below). |
 | `map-env` | command | Exports the CIRCLE_*->BITBUCKET_* mapping into `$BASH_ENV`. |
 | `run-pipe` | command | The `docker run` invocation itself. Named `run-pipe`, not `run`, to avoid colliding with CircleCI's own built-in `run` step. |
 | `collect-outputs` | command | Reads the output file back and exports it into `$BASH_ENV`. |
