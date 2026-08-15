@@ -61,7 +61,7 @@ private images, array variables, and pre/post-step interleaving.
   native steps in between, and so a future version could chain more than one pipe per job without
   a breaking change. `pipe` is just the common case, pre-assembled.
 - Runs on a `machine` executor. **Not** `docker` + `setup_remote_docker` -- see
-  ["What does not work"](#what-does-not-work) for why.
+  ["Limits"](#limits) for why.
 
 ```mermaid
 flowchart TD
@@ -87,7 +87,72 @@ Bitbucket Pipe is already its own purpose-built image -- `run-pipe` just `docker
 structural story as the sibling `harness` orb. Atlassian's own `atlassian/default-image` (the
 *outer* Bitbucket Cloud build-step container, not something a Pipe runs inside) doesn't fix
 anything here since this orb never executes user code in that outer layer -- see "Test results
-and artifacts" and "What does not work" for the two places a real difference *does* show up.
+and artifacts" and "Limits" for the two places a real difference *does* show up.
+
+## Mapping your existing config
+
+Here's a real Bitbucket Pipelines step running a pipe, next to this orb's equivalent:
+
+```yaml
+# bitbucket-pipelines.yml (Bitbucket Pipelines)
+pipelines:
+  default:
+    - step:
+        name: Deploy to S3
+        script:
+          - pipe: atlassian/aws-s3-deploy:1.7.0
+            variables:
+              AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+              AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+              AWS_DEFAULT_REGION: us-east-1
+              S3_BUCKET: my-bucket
+              LOCAL_PATH: dist
+```
+
+```yaml
+# .circleci/config.yml (this orb)
+version: 2.1
+orbs:
+  bitbucket: cci-labs/bitbucket@x.y.z
+workflows:
+  deploy:
+    jobs:
+      - bitbucket/pipe:
+          image: bitbucketpipelines/aws-s3-deploy:1.7.0
+          variables: |
+            AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+            AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+            AWS_DEFAULT_REGION=us-east-1
+            S3_BUCKET=my-bucket
+            LOCAL_PATH=dist
+```
+
+What actually changed, concept by concept:
+
+- **A Bitbucket "pipe" step becomes a `bitbucket/pipe` command (inline, among native steps) or
+  job (standalone).** Bitbucket's `pipe:` attribute names a **repository reference**
+  (`atlassian/aws-s3-deploy:1.7.0`) that Bitbucket's own backend resolves into a Docker image;
+  this orb has no such resolver (a locked design decision -- see "Limits" below), so
+  `image:` takes the pipe's real Docker image reference directly (typically the same
+  organization's Docker Hub namespace, here `bitbucketpipelines/...` instead of
+  `atlassian/...` -- check the pipe's own `pipe.yml` or Docker Hub page if unsure).
+- **`variables:` goes from real Bitbucket YAML (a map) to this orb's flat `KEY=VALUE` lines** --
+  same literal, unprefixed names either side (see "Bitbucket variables are literal" below), just
+  a different YAML shape to hold them.
+- **Where the vendor's env vars come from doesn't actually change much here**, which is unusual
+  among this orb's sibling bridges: real Bitbucket Pipelines *also* expects secrets as plain
+  repository/workspace variables referenced by name, so `$AWS_ACCESS_KEY_ID` means almost the
+  same thing on both sides -- the only difference is which platform's UI you defined it in
+  (Bitbucket's **Repository settings -> Variables**, versus a CircleCI **context** or **project
+  environment variable**). This orb's `variables:`/`extra-env-mapping:` still run the value
+  through `circleci env subst` at runtime, so the secret never has to be typed into committed
+  config on either platform.
+- **What Bitbucket's platform does for you that CircleCI does natively instead:** real Bitbucket
+  auto-scans fixed test-report globs and calls that Pipelines' test-results feature -- this
+  orb's `store-test-results` default (see "Test results and artifacts" below) is the direct
+  equivalent, already wired up with zero extra config. Bitbucket has no fixed artifacts
+  directory either, so there's nothing to port on that axis -- add your own `store_artifacts`
+  step if you know the specific pipe's own output path.
 
 ## Bitbucket variables are literal -- no prefix
 
@@ -219,7 +284,7 @@ against Docker Hub while researching this orb's vendor-image options: unlike the
 orb (whose Steps genuinely run bare with nothing else providing a toolchain), there's no gap here
 for a default executor to fill.
 
-## What does not work
+## Limits
 
 - **Bitbucket-hosted pipe references (`account/repo:tag`)**: this orb only runs `docker://`-style
   image references, passed to `docker run` verbatim, per this project's locked design decision to
@@ -258,15 +323,79 @@ for a default executor to fill.
 - **One pipe per orb call**: by design (see "Scope" above). The underlying commands are layered
   so chaining could be added later without a breaking change, but that isn't built yet.
 
-## Commands and job
+## Commands and job reference
 
 | Name | Kind | What it does |
 |---|---|---|
-| `pipe` | command, job | The aggregate most users want: all four steps below, in order. |
-| `create-output-file` | command | Creates the output-variables file + pipe storage scratch dirs. |
+| `pipe` | command, job | The aggregate most users want: create-output-file -> map-env -> run-pipe -> collect-outputs -> store_test_results, in order. |
+| `create-output-file` | command | Creates the output-variables file + the two pipe-storage scratch dirs. |
 | `map-env` | command | Exports the CIRCLE_*->BITBUCKET_* mapping into `$BASH_ENV`. |
 | `run-pipe` | command | The `docker run` invocation itself. Named `run-pipe`, not `run`, to avoid colliding with CircleCI's own built-in `run` step. |
 | `collect-outputs` | command | Reads the output file back and exports it into `$BASH_ENV`. |
+
+**Reach for the granular commands instead of the `pipe` aggregate when:** you're chaining more
+than one pipe in one job (see [`src/examples/chain_two_pipes.yml`](src/examples/chain_two_pipes.yml)
+-- `skip-map-env` on later calls avoids redundant work), or you need native steps interleaved
+between individual stages (e.g. inspecting the mapped `BITBUCKET_*` vars before `run-pipe`).
+
+### `pipe` (command and job) parameters
+
+| Parameter | Type | Default | What it does |
+|---|---|---|---|
+| `executor` *(job only)* | executor | `default` | Must be a `machine` executor -- see "Limits." |
+| `checkout` | boolean | `true` | Check out the project first. |
+| `image` | string | *(required)* | The pipe's Docker image reference, passed to `docker run` verbatim. |
+| `variables` | string | `""` | The pipe's `variables:` as multi-line `KEY=VALUE`, literal Bitbucket names. `$SECRET` resolved via `circleci env subst`. |
+| `skip-map-env` | boolean | `false` | Skip the CIRCLE_*->BITBUCKET_* mapping. Most pipes need at least `BITBUCKET_REPO_OWNER`; only skip if you supply everything yourself. |
+| `extra-env-mapping` | string | `""` | Multi-line `BITBUCKET_VAR=value` pairs added on top of (and overriding) the built-in mapping. |
+| `clone-dir` | string | `/opt/atlassian/pipelines/agent/build` | Container-side path the checkout is bind-mounted at (`$BITBUCKET_CLONE_DIR`). |
+| `output-file` | string | `/tmp/bitbucket-pipe-scratch/pipe-output.env` | Host-side path for the pipe's output-variables file. |
+| `pipe-storage-dir` | string | `/tmp/bitbucket-pipe-scratch/storage` | Host-side scratch dir mapped to `BITBUCKET_PIPE_STORAGE_DIR`. |
+| `pipe-shared-storage-dir` | string | `/tmp/bitbucket-pipe-scratch/shared-storage` | Host-side scratch dir mapped to `BITBUCKET_PIPE_SHARED_STORAGE_DIR`. |
+| `user` | string | `""` | Optional `--user` for `docker run` (e.g. `1000:1000`). Empty means the pipe's container runs as root, matching real Bitbucket. |
+| `fix-permissions` | boolean | `false` | `chown` the checkout back to the CircleCI user after the pipe exits. |
+| `extra-docker-args` | string | `""` | Extra flags appended to `docker run`, before the image reference (e.g. `--network host`). |
+| `registry-username` | env_var_name | `BITBUCKET_PIPE_REGISTRY_USERNAME` | Name of the env var holding a private image's registry username. |
+| `registry-password` | env_var_name | `BITBUCKET_PIPE_REGISTRY_PASSWORD` | Name of the env var holding a private image's registry password/token. |
+| `registry-server` | string | `""` | Registry host to log in to. Empty means Docker Hub. |
+| `step-name` | string | `Run Bitbucket pipe` | Name of the `docker run` step -- override when chaining pipes so job-log steps are distinguishable. |
+| `store-test-results` | boolean | `true` | Auto-run `store_test_results` against the checkout root after the pipe. |
+
+Individual commands (`create-output-file`, `map-env`, `run-pipe`, `collect-outputs`) expose the
+matching subset of these parameters under the same names -- see each command's own description on
+the [Orb Registry page](https://circleci.com/developer/orbs/orb/cci-labs/bitbucket) for the
+exhaustive, always-current list.
+
+### Worked example: composing the granular commands by hand
+
+```yaml
+version: 2.1
+orbs:
+  bitbucket: cci-labs/bitbucket@x.y.z
+jobs:
+  deploy:
+    machine:
+      image: ubuntu-2404:current
+    steps:
+      - checkout
+      - bitbucket/create-output-file
+      - bitbucket/map-env
+      - bitbucket/run-pipe:
+          image: bitbucketpipelines/aws-s3-deploy:1.7.0
+          variables: |
+            AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+            AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+            AWS_DEFAULT_REGION=us-east-1
+            S3_BUCKET=my-bucket
+            LOCAL_PATH=dist
+      - bitbucket/collect-outputs
+      - store_test_results:
+          path: .
+workflows:
+  main:
+    jobs:
+      - deploy
+```
 
 The `pipe` **job** (only when invoked from a workflow's `jobs:` list, not the `pipe` command
 inside another job's own `steps:`) also accepts CircleCI's own built-in `pre-steps`/`post-steps`
@@ -287,7 +416,15 @@ including this job's own internal `checkout` -- not just before the pipe. If a p
 repo checked out, do that checkout yourself inside the pre-step, or use the `pipe` command with
 native steps around it instead (see [`src/examples/`](src/examples/)).
 
-Full parameter reference: [CircleCI Orb Registry page](https://circleci.com/developer/orbs/orb/cci-labs/bitbucket).
+## Legal / compliance
+
+This orb implements pipe execution purely as a `docker run` against the pipe's own published
+image, using only its publicly documented `variables:`/output-variables contract -- it does not
+read, copy, or fork any Bitbucket Pipelines runner source, and it never contacts Bitbucket's own
+control plane (no account, no runner registration). The pipe image itself is whatever the
+pipe's own publisher (Atlassian or a third party) ships under that image's own license -- check
+its Docker Hub/`pipe.yml` before relying on it in a context where that matters, the same
+diligence you'd apply running any third-party container image.
 
 ## Resources
 
