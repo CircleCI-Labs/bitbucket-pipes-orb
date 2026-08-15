@@ -16,6 +16,29 @@ export_kv() {
     echo "export ${key}='${escaped}'" >> "$BASH_ENV"
 }
 
+# Shell-control variable names that must never be settable through a value this script only
+# treats as free-form data (here: the `extra-env-mapping` parameter, itself run through
+# `circleci env subst`). This isn't a Bitbucket-fidelity restriction -- no real Bitbucket
+# pipeline variable is named PATH/BASH_ENV/etc -- it exists solely because this script's sink is
+# $BASH_ENV, which every later native step in the job sources. An identifier-syntax check alone
+# (`^[A-Za-z_][A-Za-z0-9_]*$`) admits every name below, letting a line like `PATH=` or
+# `BASH_ENV=/dev/null` rewrite the shell environment for the rest of the job. See the README's
+# "Bitbucket variables are literal" section for the documented tradeoff.
+RESERVED_SHELL_VAR_NAMES=(
+    PATH IFS BASH_ENV ENV SHELL SHELLOPTS PS4
+    LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH
+    NODE_OPTIONS GIT_SSH_COMMAND PERL5LIB PYTHONPATH RUBYOPT CDPATH
+)
+is_reserved_shell_var_name() {
+    local candidate="$1" reserved
+    for reserved in "${RESERVED_SHELL_VAR_NAMES[@]}"; do
+        if [[ "${candidate}" == "${reserved}" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Placeholder UUID for identity fields Bitbucket sets that CircleCI has no equivalent for
 # (BITBUCKET_PIPELINE_UUID, BITBUCKET_STEP_UUID, etc). These exist purely so a pipe that merely
 # checks *presence* (or uniqueness) of the variable does not crash -- they are not, and cannot
@@ -108,7 +131,12 @@ fi
 #     fabricated value could actively mislead it, unlike a bare identity UUID. ---
 export_kv BITBUCKET_PIPELINE_UUID "$(gen_uuid)"
 export_kv BITBUCKET_STEP_UUID "$(gen_uuid)"
-export_kv BITBUCKET_WORKSPACE_UUID "$(gen_uuid)"
+WORKSPACE_UUID="$(gen_uuid)"
+export_kv BITBUCKET_WORKSPACE_UUID "${WORKSPACE_UUID}"
+# Deprecated alias of BITBUCKET_WORKSPACE_UUID (still documented by Atlassian as "Deprecated.
+# See BITBUCKET_WORKSPACE_UUID") -- reuses the same generated value rather than a second,
+# independent UUID, since on real Bitbucket the two always refer to the same workspace.
+export_kv BITBUCKET_REPO_OWNER_UUID "${WORKSPACE_UUID}"
 export_kv BITBUCKET_REPO_UUID "$(gen_uuid)"
 export_kv BITBUCKET_PROJECT_UUID "$(gen_uuid)"
 export_kv BITBUCKET_STEP_TRIGGERER_UUID "$(gen_uuid)"
@@ -138,6 +166,10 @@ if [[ -n "${ORB_VAL_EXTRA_ENV_MAPPING}" ]]; then
         VALUE="${line#*=}"
         if [[ ! "${KEY}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
             echo "Warning: skipping extra-env-mapping line with an invalid variable name: ${line}" >&2
+            continue
+        fi
+        if is_reserved_shell_var_name "${KEY}"; then
+            echo "Warning: skipping extra-env-mapping line naming the reserved shell-control variable '${KEY}'; this orb never lets extra-env-mapping/output-variables set PATH/BASH_ENV/IFS/etc, since that would rewrite the shell environment for every later step in the job. No real Bitbucket variable is named '${KEY}'. See the README." >&2
             continue
         fi
         export_kv "${KEY}" "${VALUE}"
