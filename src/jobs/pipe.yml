@@ -102,6 +102,15 @@ parameters:
     type: string
     default: Run Bitbucket pipe
     description: Allows for customizing the name of the `docker run` step specifically.
+  store-test-results:
+    type: boolean
+    default: true
+    description: >
+      Automatically run `store_test_results` against the checkout root after the pipe --
+      see the `pipe` command's own parameter description for the full rationale
+      (real Bitbucket's 5-glob test-report scan, and why there's no artifacts
+      equivalent). Disable if you'd rather call `store_test_results` yourself, e.g. via
+      `post-steps:`.
 
 executor: << parameters.executor >>
 
@@ -127,3 +136,4 @@ steps:
       registry-password: << parameters.registry-password >>
       registry-server: << parameters.registry-server >>
       step-name: << parameters.step-name >>
+      store-test-results: << parameters.store-test-results >>
