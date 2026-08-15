@@ -144,6 +144,29 @@ on a missing variable.
 Add to or override any of this with the `extra-env-mapping` parameter (multi-line
 `BITBUCKET_VAR=value`, also run through `circleci env subst`), applied after the table above.
 
+## Test results and artifacts
+
+**`store_test_results` runs automatically, by default.** After the pipe runs, `pipe` (command and
+job) calls `store_test_results` against the checkout root (`.`), gated by the `store-test-results`
+parameter (default `true`). Real Bitbucket Pipelines auto-scans five fixed glob patterns rooted at
+its own clone directory for JUnit XML (`surefire-reports/`, `failsafe-reports/`, `test-results/`,
+`test-reports/`, `TestResults/`, each up to 3 levels deep) -- the checkout root is a safe superset
+of all five, since CircleCI's own recursive XML scan doesn't need the exact subfolder names. A pipe
+that writes no JUnit XML anywhere makes this a silent no-op, not a failure. Disable it with
+`store-test-results: false` if you'd rather call `store_test_results` yourself (e.g. with a
+narrower path), or if you're calling the `pipe` command more than once in the same job and only
+want it after the last call.
+
+**There is no equivalent `store-artifacts` default, and that's deliberate.** Real Bitbucket has no
+fixed artifact directory at all -- every pipe declares its own `artifacts:` paths, and those
+artifacts are transient (14-day expiry, step-to-step handoff), not a persistent store this orb
+could point at. The only directory this orb *does* own is the bind-mounted checkout root itself
+(the same one `store-test-results` scans above), and defaulting `store_artifacts` there would
+upload the entire repository on every run -- a materially worse default than no default at all. If
+you know the specific pipe you're running deposits real output files at a predictable path inside
+the checkout, add your own `store_artifacts` step (or `post-steps:` on the `pipe` job) pointed at
+that path.
+
 ## What does not work
 
 - **Bitbucket-hosted pipe references (`account/repo:tag`)**: this orb only runs `docker://`-style
@@ -230,6 +253,17 @@ orb's env mapping and output handling are built from.
 
 We welcome [issues](https://github.com/CircleCI-Labs/bitbucket-pipes-orb/issues) and [pull
 requests](https://github.com/CircleCI-Labs/bitbucket-pipes-orb/pulls) against this repository!
+
+**CircleCI CLI version floor: `>= 1.0.48254`.** Older CLI builds silently pack this orb's
+`<<include(...)>>` directives as literal text instead of expanding them, producing a broken orb
+that can still pass `circleci orb validate` -- a false green with no other symptom. Run
+`scripts/check-circleci-cli-version.sh` (also wired into `.circleci/config.yml`'s `lint-pack`
+workflow) before packing locally if you're not sure which build you have.
+
+**`pre-steps`/`post-steps` are reserved job-parameter names.** `circleci orb validate` rejects a
+job parameter literally named `pre-steps` or `post-steps` outright -- this only surfaces under
+`orb validate`, which needs a token, so a plain `circleci config validate`/pack will not catch it.
+If you're adding a new job parameter, don't pick either name.
 
 ## How to Publish An Update
 

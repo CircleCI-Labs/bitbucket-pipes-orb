@@ -1,9 +1,10 @@
 description: >
   Runs one Bitbucket Pipe as a single step among your other native CircleCI steps: creates the
   output-variables file, maps CircleCI's build context onto the BITBUCKET_* variables pipes
-  read, runs the pipe's Docker image, and exports anything the pipe wrote back into $BASH_ENV.
-  Layers the `create-output-file` / `map-env` / `run` / `collect-outputs` commands -- call those
-  directly instead if you need to interleave your own steps in between.
+  read, runs the pipe's Docker image, exports anything the pipe wrote back into $BASH_ENV, and
+  (by default) runs `store_test_results` against the checkout root. Layers the
+  `create-output-file` / `map-env` / `run` / `collect-outputs` commands -- call those directly
+  instead if you need to interleave your own steps in between.
 
 parameters:
   checkout:
@@ -100,6 +101,22 @@ parameters:
     type: string
     default: Run Bitbucket pipe
     description: Allows for customizing the name of the `docker run` step specifically.
+  store-test-results:
+    type: boolean
+    default: true
+    description: >
+      Automatically run `store_test_results` against the checkout root after the pipe --
+      real Bitbucket auto-scans five fixed glob patterns rooted at its own clone dir
+      (surefire-reports/, failsafe-reports/, test-results/, test-reports/, TestResults/,
+      each up to 3 levels deep) for JUnit XML; the checkout root is a safe superset of
+      all five, since CircleCI's own recursive XML scan doesn't need the exact subfolder
+      names. A pipe that writes no JUnit XML anywhere makes this a silent no-op, not a
+      failure. Disable if you'd rather call `store_test_results` yourself, or if you're
+      calling this command more than once in the same job and only want it after the
+      last call. There is no equivalent `store-artifacts` default: real Bitbucket has no
+      fixed artifact directory (every pipe declares its own, transient, `artifacts:`
+      paths), and defaulting to the checkout root for artifacts would upload the entire
+      repository on every run -- see the README.
 
 steps:
   - when:
@@ -133,3 +150,8 @@ steps:
       step-name: << parameters.step-name >>
   - collect-outputs:
       output-file: << parameters.output-file >>
+  - when:
+      condition: << parameters.store-test-results >>
+      steps:
+        - store_test_results:
+            path: .
