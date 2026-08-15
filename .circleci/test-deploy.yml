@@ -94,6 +94,212 @@ jobs:
           name: Native step after the command-form pipe
           command: echo "Command-form pipe usage completed; continuing with native CircleCI steps."
 
+  # Gap-closing test: the existing demo_pipe_confirms_required_var job only proves the
+  # VENDOR image fails without NAME; it never exercises this orb's own run-pipe.sh. Calls
+  # run-pipe.sh directly against the same vendor image/missing-var case and asserts its
+  # exit code matches the vendor image's own real exit code exactly, proving `set +e;
+  # docker ...; PIPE_EXIT_CODE=$?; ...; exit "${PIPE_EXIT_CODE}"` genuinely re-raises it
+  # rather than substituting some other code.
+  test_pipe_failure_propagation:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Determine the vendor image's own real exit code, independent of the orb
+          command: |
+            set +e
+            docker run --rm bitbucketpipelines/demo-pipe-bash:0.1.0
+            echo "export VENDOR_EXIT_CODE=$?" >> "$BASH_ENV"
+      - run:
+          name: Regression test - run-pipe.sh propagates that exact exit code, unchanged
+          command: |
+            set +e
+            outdir="$(mktemp -d)"
+            ORB_VAL_IMAGE="bitbucketpipelines/demo-pipe-bash:0.1.0" \
+              ORB_VAL_VARIABLES="" \
+              ORB_VAL_CLONE_DIR="/opt/atlassian/pipelines/agent/build" \
+              ORB_VAL_OUTPUT_FILE="${outdir}/pipe-output.env" \
+              ORB_VAL_PIPE_STORAGE_DIR="${outdir}/storage" \
+              ORB_VAL_PIPE_SHARED_STORAGE_DIR="${outdir}/shared" \
+              ORB_VAL_USER="" \
+              ORB_VAL_FIX_PERMISSIONS="false" \
+              ORB_VAL_EXTRA_DOCKER_ARGS="" \
+              ORB_VAL_REGISTRY_USERNAME="BITBUCKET_PIPE_REGISTRY_USERNAME" \
+              ORB_VAL_REGISTRY_PASSWORD="BITBUCKET_PIPE_REGISTRY_PASSWORD" \
+              ORB_VAL_REGISTRY_SERVER="" \
+              bash src/scripts/run-pipe.sh
+            actual_exit=$?
+            set -e
+            if [ "${actual_exit}" -ne "${VENDOR_EXIT_CODE}" ]; then
+              echo "FAIL: expected run-pipe.sh to exit ${VENDOR_EXIT_CODE} (the vendor image's own exit code), got ${actual_exit}" >&2
+              exit 1
+            fi
+            echo "OK: run-pipe.sh propagated the vendor image's real exit code (${actual_exit}) unchanged."
+
+  # Regression test: run-pipe.sh's ORB_RESERVED_CONTAINER_VARS denylist and
+  # parse_bracket_list array flattening. Shims `docker` on PATH to record its own argv
+  # (no real container needed -- this only needs to prove which `-e` flags run-pipe.sh
+  # decided to pass, not what a container does with them).
+  test_variables_reserved_name_and_array_regression:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Regression test - reserved-name denylist, malformed lines, and bracket-list flattening
+          command: |
+            set -euo pipefail
+            fakebin="$(mktemp -d)"
+            call_log="$(mktemp)"
+            printf '#!/bin/bash\necho "$@" >> "%s"\nexit 0\n' "${call_log}" > "${fakebin}/docker"
+            chmod +x "${fakebin}/docker"
+            outdir="$(mktemp -d)"
+
+            PATH="${fakebin}:${PATH}" \
+              ORB_VAL_IMAGE="test/image" \
+              ORB_VAL_VARIABLES=$'BITBUCKET_CLONE_DIR=/evil\nmalformedlinenoequals\n1BAD=value\nCAPS=['"'"'A'"'"', '"'"'B'"'"']\nNAME=x' \
+              ORB_VAL_CLONE_DIR="/opt/atlassian/pipelines/agent/build" \
+              ORB_VAL_OUTPUT_FILE="${outdir}/pipe-output.env" \
+              ORB_VAL_PIPE_STORAGE_DIR="${outdir}/storage" \
+              ORB_VAL_PIPE_SHARED_STORAGE_DIR="${outdir}/shared" \
+              ORB_VAL_USER="" \
+              ORB_VAL_FIX_PERMISSIONS="false" \
+              ORB_VAL_EXTRA_DOCKER_ARGS="" \
+              ORB_VAL_REGISTRY_USERNAME="BITBUCKET_PIPE_REGISTRY_USERNAME" \
+              ORB_VAL_REGISTRY_PASSWORD="BITBUCKET_PIPE_REGISTRY_PASSWORD" \
+              ORB_VAL_REGISTRY_SERVER="" \
+              bash src/scripts/run-pipe.sh
+
+            call_args="$(cat "${call_log}")"
+            case "${call_args}" in
+              *"BITBUCKET_CLONE_DIR=/evil"*)
+                echo "FAIL: the reserved 'BITBUCKET_CLONE_DIR' variables: line reached docker run instead of being skipped:" >&2
+                echo "${call_args}" >&2
+                exit 1
+                ;;
+            esac
+            case "${call_args}" in
+              *"-e BITBUCKET_CLONE_DIR=/opt/atlassian/pipelines/agent/build"*) ;;
+              *)
+                echo "FAIL: expected run-pipe's own BITBUCKET_CLONE_DIR (matching the bind-mount) to still be set:" >&2
+                echo "${call_args}" >&2
+                exit 1
+                ;;
+            esac
+            case "${call_args}" in
+              *"-e CAPS_COUNT=2"*"-e CAPS_0=A"*"-e CAPS_1=B"*) ;;
+              *)
+                echo "FAIL: expected the bracket list CAPS=['A', 'B'] to flatten into CAPS_COUNT=2/CAPS_0=A/CAPS_1=B:" >&2
+                echo "${call_args}" >&2
+                exit 1
+                ;;
+            esac
+            case "${call_args}" in
+              *"1BAD"*)
+                echo "FAIL: the invalid-identifier '1BAD=value' variables: line reached docker run instead of being skipped:" >&2
+                echo "${call_args}" >&2
+                exit 1
+                ;;
+            esac
+            case "${call_args}" in
+              *"-e NAME=x"*) ;;
+              *)
+                echo "FAIL: expected the well-formed 'NAME=x' variables: line to reach docker run:" >&2
+                echo "${call_args}" >&2
+                exit 1
+                ;;
+            esac
+            echo "OK: the reserved-name denylist, malformed-line skip, invalid-identifier skip, and bracket-list flattening all behaved correctly."
+
+  # Regression test: map-env.sh's RESERVED_SHELL_VAR_NAMES denylist -- an extra-env-mapping
+  # line naming PATH/BASH_ENV/etc must be warned-and-skipped, not exported, since every
+  # later native step in the job sources $BASH_ENV.
+  test_extra_env_mapping_reserved_name_regression:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Regression test - PATH/BASH_ENV cannot be rewritten via extra-env-mapping
+          command: |
+            set -euo pipefail
+            bash_env_file="$(mktemp)"
+            BASH_ENV="${bash_env_file}" \
+              ORB_VAL_CLONE_DIR="/opt/atlassian/pipelines/agent/build" \
+              ORB_VAL_EXTRA_ENV_MAPPING=$'PATH=/evil\nBASH_ENV=/dev/null\nGOOD_VAR=ok' \
+              bash src/scripts/map-env.sh
+            if grep -qE '^export (PATH|BASH_ENV)=' "${bash_env_file}"; then
+              echo "FAIL: PATH or BASH_ENV was rewritten via extra-env-mapping:" >&2
+              grep -E '^export (PATH|BASH_ENV)=' "${bash_env_file}" >&2
+              exit 1
+            fi
+            if ! grep -q "^export GOOD_VAR='ok'" "${bash_env_file}"; then
+              echo "FAIL: expected GOOD_VAR to be exported, got:" >&2
+              cat "${bash_env_file}" >&2
+              exit 1
+            fi
+            echo "OK: PATH/BASH_ENV cannot be rewritten via extra-env-mapping; a well-formed override still works."
+
+  # Gap-closing test: call `bitbucket/pipe` twice in one job, against two different
+  # output-file paths, and confirm both round-trips stay independent.
+  test_pipe_idempotency:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Build a local test pipe image
+          command: |
+            mkdir -p /tmp/test-pipe-build-idempotency
+            {
+              echo 'FROM busybox:1.36'
+              echo 'CMD echo "PIPE_OUTPUT_GREETING=$MSG" >> "$BITBUCKET_PIPELINES_VARIABLES_PATH"'
+            } > /tmp/test-pipe-build-idempotency/Dockerfile
+            docker build -t bitbucket-orb-test-pipe-idempotency:local /tmp/test-pipe-build-idempotency
+      - bitbucket/pipe:
+          image: bitbucket-orb-test-pipe-idempotency:local
+          variables: |
+            MSG=first-call
+          output-file: /tmp/bitbucket-pipe-scratch/first.env
+      - run:
+          name: Assert the first call's output landed and is not clobbered yet
+          command: |
+            if [ "${PIPE_OUTPUT_GREETING:-}" != "first-call" ]; then
+              echo "FAIL: expected PIPE_OUTPUT_GREETING=first-call after the first call, got '${PIPE_OUTPUT_GREETING:-<unset>}'" >&2
+              exit 1
+            fi
+      - bitbucket/pipe:
+          image: bitbucket-orb-test-pipe-idempotency:local
+          variables: |
+            MSG=second-call
+          output-file: /tmp/bitbucket-pipe-scratch/second.env
+          skip-map-env: true
+      - run:
+          name: Assert both calls' output files stayed independent and uncorrupted
+          command: |
+            if ! grep -qx "PIPE_OUTPUT_GREETING=first-call" /tmp/bitbucket-pipe-scratch/first.env; then
+              echo "FAIL: expected /tmp/bitbucket-pipe-scratch/first.env to still contain PIPE_OUTPUT_GREETING=first-call, got:" >&2
+              cat /tmp/bitbucket-pipe-scratch/first.env >&2
+              exit 1
+            fi
+            if ! grep -qx "PIPE_OUTPUT_GREETING=second-call" /tmp/bitbucket-pipe-scratch/second.env; then
+              echo "FAIL: expected /tmp/bitbucket-pipe-scratch/second.env to contain PIPE_OUTPUT_GREETING=second-call, got:" >&2
+              cat /tmp/bitbucket-pipe-scratch/second.env >&2
+              exit 1
+            fi
+            # $BASH_ENV is job-scoped and append-only: the second call's export of the same
+            # verbatim key is the one a later native step now sees -- documented behavior.
+            if [ "${PIPE_OUTPUT_GREETING:-}" != "second-call" ]; then
+              echo "FAIL: expected \$BASH_ENV to reflect the second (latest) call's PIPE_OUTPUT_GREETING=second-call, got '${PIPE_OUTPUT_GREETING:-<unset>}'" >&2
+              exit 1
+            fi
+            echo "OK: two chained bitbucket/pipe calls in one job kept independent output files uncorrupted, and \$BASH_ENV reflects the second (latest) call as documented."
+
 workflows:
   test-deploy:
     jobs:
@@ -153,6 +359,14 @@ workflows:
           filters: *filters
       - command_usage_inline:
           filters: *filters
+      - test_pipe_failure_propagation:
+          filters: *filters
+      - test_variables_reserved_name_and_array_regression:
+          filters: *filters
+      - test_extra_env_mapping_reserved_name_regression:
+          filters: *filters
+      - test_pipe_idempotency:
+          filters: *filters
       # The orb must be re-packed for publishing, and saved to the workspace.
       - orb-tools/pack:
           filters: *filters
@@ -163,6 +377,10 @@ workflows:
             - "Test output round-trip via a local image + pre/post-steps"
             - map_env_isolation
             - command_usage_inline
+            - test_pipe_failure_propagation
+            - test_variables_reserved_name_and_array_regression
+            - test_extra_env_mapping_reserved_name_regression
+            - test_pipe_idempotency
       - orb-tools/publish:
           name: "Publish Dev"
           orb_name: cci-labs/bitbucket
