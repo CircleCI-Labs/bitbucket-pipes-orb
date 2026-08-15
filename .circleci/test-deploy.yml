@@ -77,6 +77,101 @@ jobs:
             esac
             echo "Confirmed: map-env's CIRCLE_* -> BITBUCKET_* mapping looks correct."
 
+  # Gap-closing test: create-output-file.sh had no dedicated test job -- it was only exercised
+  # indirectly, because every bitbucket/pipe invocation happens to call it first. Exercises the
+  # real script directly: the output-variables file and both pipe-storage scratch directories are
+  # created (the output file empty/truncated; the parent directory of a nested, not-yet-existing
+  # output-file path is created too), all three resulting paths are exported into $BASH_ENV under
+  # their real BITBUCKET_* names, non-default paths for all three parameters are honored, and --
+  # the one behavior worth pinning down explicitly -- calling it a second time against the same
+  # output-file path truncates whatever was written to it in between. That matters: a caller
+  # composing the granular commands who calls create-output-file a second time without giving it
+  # a fresh output-file path will silently lose anything collected so far.
+  test_create_output_file:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - checkout
+      - run:
+          name: Output file + both storage dirs are created, and all three paths land in $BASH_ENV
+          command: |
+            set -euo pipefail
+            root="$(mktemp -d)"
+            output_file="${root}/nested/does-not-exist-yet/pipe-output.env"
+            storage_dir="${root}/storage"
+            shared_dir="${root}/shared-storage"
+            bash_env_file="$(mktemp)"
+
+            BASH_ENV="${bash_env_file}" \
+              ORB_VAL_OUTPUT_FILE="${output_file}" \
+              ORB_VAL_PIPE_STORAGE_DIR="${storage_dir}" \
+              ORB_VAL_PIPE_SHARED_STORAGE_DIR="${shared_dir}" \
+              bash src/scripts/create-output-file.sh
+
+            if [ ! -f "${output_file}" ]; then
+              echo "FAIL: output file ${output_file} was not created" >&2
+              exit 1
+            fi
+            if [ -s "${output_file}" ]; then
+              echo "FAIL: output file ${output_file} is not empty:" >&2
+              cat "${output_file}" >&2
+              exit 1
+            fi
+            if [ ! -d "${storage_dir}" ]; then
+              echo "FAIL: pipe-storage-dir ${storage_dir} was not created" >&2
+              exit 1
+            fi
+            if [ ! -d "${shared_dir}" ]; then
+              echo "FAIL: pipe-shared-storage-dir ${shared_dir} was not created" >&2
+              exit 1
+            fi
+
+            # shellcheck disable=SC1090
+            source "${bash_env_file}"
+            if [ "${BITBUCKET_PIPELINES_VARIABLES_PATH:-}" != "${output_file}" ]; then
+              echo "FAIL: BITBUCKET_PIPELINES_VARIABLES_PATH was '${BITBUCKET_PIPELINES_VARIABLES_PATH:-<unset>}', expected '${output_file}'" >&2
+              exit 1
+            fi
+            if [ "${BITBUCKET_PIPE_STORAGE_DIR:-}" != "${storage_dir}" ]; then
+              echo "FAIL: BITBUCKET_PIPE_STORAGE_DIR was '${BITBUCKET_PIPE_STORAGE_DIR:-<unset>}', expected '${storage_dir}'" >&2
+              exit 1
+            fi
+            if [ "${BITBUCKET_PIPE_SHARED_STORAGE_DIR:-}" != "${shared_dir}" ]; then
+              echo "FAIL: BITBUCKET_PIPE_SHARED_STORAGE_DIR was '${BITBUCKET_PIPE_SHARED_STORAGE_DIR:-<unset>}', expected '${shared_dir}'" >&2
+              exit 1
+            fi
+            echo "OK: output file created empty, both storage dirs created (including a nested, not-yet-existing parent), and all three non-default paths were exported into \$BASH_ENV under their real BITBUCKET_* names."
+      - run:
+          name: "Idempotency: a second call truncates content written after the first call"
+          command: |
+            set -euo pipefail
+            root="$(mktemp -d)"
+            output_file="${root}/pipe-output.env"
+
+            ORB_VAL_OUTPUT_FILE="${output_file}" \
+              ORB_VAL_PIPE_STORAGE_DIR="${root}/storage" \
+              ORB_VAL_PIPE_SHARED_STORAGE_DIR="${root}/shared-storage" \
+              bash src/scripts/create-output-file.sh
+            echo "PIPE_OUTPUT_GREETING=collected_between_the_two_calls" >> "${output_file}"
+            if [ ! -s "${output_file}" ]; then
+              echo "FAIL: test setup did not actually write content to truncate" >&2
+              exit 1
+            fi
+
+            # Simulate a caller re-running create-output-file against the same path, e.g. before a
+            # second run-pipe call in the same job that forgot to pass it a fresh path.
+            ORB_VAL_OUTPUT_FILE="${output_file}" \
+              ORB_VAL_PIPE_STORAGE_DIR="${root}/storage" \
+              ORB_VAL_PIPE_SHARED_STORAGE_DIR="${root}/shared-storage" \
+              bash src/scripts/create-output-file.sh
+
+            if [ -s "${output_file}" ]; then
+              echo "FAIL: expected the second call to truncate the file back to empty, but it still contains:" >&2
+              cat "${output_file}" >&2
+              exit 1
+            fi
+            echo "OK: confirmed real behavior -- a second call to create-output-file truncates whatever was written to the output file since the first call. Callers composing the granular commands must give each call its own output-file path (skip-map-env on later bitbucket/pipe calls does not change this), or accept that a repeat call silently discards prior output."
+
   # Tests the `pipe` command directly, inline among native steps (as opposed to the `pipe` job)
   # -- this orb's other required entry point.
   command_usage_inline:
@@ -482,6 +577,8 @@ workflows:
           filters: *filters
       - map_env_isolation:
           filters: *filters
+      - test_create_output_file:
+          filters: *filters
       - command_usage_inline:
           filters: *filters
       - test_pipe_failure_propagation:
@@ -505,6 +602,7 @@ workflows:
             - demo_pipe_confirms_required_var
             - "Test output round-trip via a local image + pre/post-steps"
             - map_env_isolation
+            - test_create_output_file
             - command_usage_inline
             - test_pipe_failure_propagation
             - test_variables_reserved_name_and_array_regression
