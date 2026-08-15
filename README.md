@@ -422,7 +422,7 @@ between individual stages (e.g. inspecting the mapped `BITBUCKET_*` vars before 
 | `pipe-shared-storage-dir` | string | `/tmp/bitbucket-pipe-scratch/shared-storage` | Host-side scratch dir mapped to `BITBUCKET_PIPE_SHARED_STORAGE_DIR`. |
 | `user` | string | `""` | Optional `--user` for `docker run` (e.g. `1000:1000`). Empty means the pipe's container runs as root, matching real Bitbucket. |
 | `fix-permissions` | boolean | `false` | `chown` the checkout back to the CircleCI user after the pipe exits. |
-| `extra-docker-args` | string | `""` | Extra flags appended to `docker run`, before the image reference (e.g. `--network host`). |
+| `extra-docker-args` | string | `""` | Extra flags appended to `docker run`, before the image reference. Understand the cost before reaching for one: `--network host` removes the pipe container's network isolation, putting it on the job's own network namespace where it can reach anything bound in the job (including cloud-instance metadata endpoints). It is only necessary when the pipe must reach a server running inside the job container, which a sibling container on the default bridge genuinely cannot do -- not as a general fix for connectivity problems. |
 | `registry-username` | env_var_name | `BITBUCKET_PIPE_REGISTRY_USERNAME` | Name of the env var holding a private image's registry username. |
 | `registry-password` | env_var_name | `BITBUCKET_PIPE_REGISTRY_PASSWORD` | Name of the env var holding a private image's registry password/token. |
 | `registry-server` | string | `""` | Registry host to log in to. Empty means Docker Hub. |
