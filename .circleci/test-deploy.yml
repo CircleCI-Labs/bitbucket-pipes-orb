@@ -158,9 +158,22 @@ jobs:
             chmod +x "${fakebin}/docker"
             outdir="$(mktemp -d)"
 
+            # Built via `printf '%s\n' ...` (each arg on its own real line), not a hand-rolled
+            # $'...'"'"'...' ANSI-C/quote-concatenation trick -- that trick was tried first and
+            # is genuinely broken: mixing $'...' (where \n becomes a real newline) with plain
+            # '...' segments (where \n stays two literal characters, backslash then "n") to
+            # smuggle a literal single-quote into the bracket-list value put the LAST \n --
+            # the one right before NAME=x -- inside a plain-quoted segment, so it silently
+            # stayed as literal "\n" text instead of becoming a real newline. Reproduced: this
+            # orb's run-pipe.sh then read "CAPS=['A', 'B']\nNAME=x" as one single malformed
+            # "line" (the bracket-list glob `[[ "${VALUE}" == \[*\] ]]` doesn't match a value
+            # that doesn't end in "]", so it fell through to the unflattened else branch),
+            # exactly the failure this regression test is supposed to catch -- caught it in
+            # itself instead of in run-pipe.sh. `printf '%s\n'` sidesteps all of this: no nested
+            # quoting to get wrong, and every arg lands on its own real newline-terminated line.
             PATH="${fakebin}:${PATH}" \
               ORB_VAL_IMAGE="test/image" \
-              ORB_VAL_VARIABLES=$'BITBUCKET_CLONE_DIR=/evil\nmalformedlinenoequals\n1BAD=value\nCAPS=['"'"'A'"'"', '"'"'B'"'"']\nNAME=x' \
+              ORB_VAL_VARIABLES="$(printf '%s\n' 'BITBUCKET_CLONE_DIR=/evil' 'malformedlinenoequals' '1BAD=value' "CAPS=['A', 'B']" 'NAME=x')" \
               ORB_VAL_CLONE_DIR="/opt/atlassian/pipelines/agent/build" \
               ORB_VAL_OUTPUT_FILE="${outdir}/pipe-output.env" \
               ORB_VAL_PIPE_STORAGE_DIR="${outdir}/storage" \
