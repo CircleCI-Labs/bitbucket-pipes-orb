@@ -15,7 +15,7 @@ CircleCI Labs, including this repo, is a collection of solutions developed by me
 CircleCI's field engineering teams through our engagement with various customer needs.
 
 -   ✅ Created by engineers @ CircleCI
--   ✅ Used by real CircleCI customers
+-   ⚠️ **Not yet used by production CircleCI customers.** This orb is currently dev-published only. What *is* verified: a real, credential-free pipe (`bitbucketpipelines/git-secrets-scan`, a genuine gitleaks scan) runs green in this repo's own CI, including a real CircleCI-checkout incompatibility this orb's own test discovered and worked around (`GITLEAKS_COMMAND=dir` -- see `.circleci/test-deploy.yml`).
 -   ❌ **not** officially supported by CircleCI support
 
 ---
@@ -204,6 +204,11 @@ input or output variable literally named `PATH`, `BASH_ENV`, or one of the four 
 above -- those are either shell internals or platform-set constants a pipe *reads*, never a
 `variables:` key a pipeline author sets.
 
+**No output value is ever masked in logs.** Unlike CircleCI's own context/project secrets (which
+CircleCI's log masking redacts by exact-match), a pipe's output-variables file, `variables:`
+values, and anything `extra-env-mapping` sets are printed and passed through in plain text --
+treat every value that reaches this orb, in either direction, as public log content.
+
 ## CircleCI -> Bitbucket variable mapping
 
 `map-env` sets the identity/context rows below before the pipe runs; the last row
@@ -284,6 +289,58 @@ against Docker Hub while researching this orb's vendor-image options: unlike the
 orb (whose Steps genuinely run bare with nothing else providing a toolchain), there's no gap here
 for a default executor to fill.
 
+## Immutable pinning
+
+`image` is passed through verbatim -- no version resolution of any kind. Any reference other
+than a full digest pin can silently point at different image content later with no diff in
+this repo to review: an omitted tag means `:latest` (the most mutable case), but even an
+explicit version tag (`bitbucketpipelines/aws-ecs-deploy:1.15.0`) can be force-moved by the
+image's own maintainer. `run-pipe` prints a one-line `WARNING` to the step's stderr whenever
+`image` doesn't contain `@sha256:...`, mirroring the identical unpinned-`#ref` warning the
+sibling `buildkite` orb already prints for a plugin reference with no ref pinned. To pin by
+digest, pull the image once and read its digest back:
+
+```shell
+docker pull bitbucketpipelines/aws-ecs-deploy:1.15.0
+docker inspect --format '{{.RepoDigests}}' bitbucketpipelines/aws-ecs-deploy:1.15.0
+# => [bitbucketpipelines/aws-ecs-deploy@sha256:1a2b3c...]
+```
+
+then use that full `image@sha256:...` string as `image`. This is a warning, not an enforced
+gate -- pinning is recommended, not required.
+
+## Caching the pipe image
+
+The `default` executor's `docker_layer_caching` parameter (off by default) enables CircleCI's
+Docker Layer Caching for the `machine` executor's Docker daemon. **This is an opt-in, billed
+feature, gated by your CircleCI plan** -- see
+[CircleCI's Docker Layer Caching docs](https://circleci.com/docs/docker-layer-caching/) for
+current plan eligibility and pricing. Rule of thumb for whether it's worth turning on: the vast
+majority of real `bitbucketpipelines/*` images are well under 70MB (`demo-pipe-bash` is 4MB,
+`git-secrets-scan` 51MB, `slack-notify` 54MB, `aws-cloudformation-deploy` 69MB -- checked
+directly against Docker Hub) and pull in low single-digit seconds; DLC's own fixed overhead
+plausibly exceeds that, so leave it off for these. Larger images (several hundred MB to multi-GB
+-- browser/ML/Android-class pipes) are where DLC's per-layer reuse starts to pay off over a full
+`docker pull` every run. There's no separate `docker save`/`load` caching mechanism in this orb
+on top of DLC -- it would be redundant with, and strictly worse than (all-or-nothing per exact
+tag, vs. DLC's per-layer reuse), a feature that already ships.
+
+## Passing pipe output across jobs
+
+The output-variables mechanism described above (and `$BASH_ENV` generally) is job-scoped: a
+pipe's output can reach a later native step in the *same* CircleCI job, but not a later job in
+the same workflow. Two real, native CircleCI mechanisms cover this without any orb change:
+
+- **Passing a value to a downstream job**: after `bitbucket/pipe` runs, write the value you need
+  to a file and `persist_to_workspace` it, then `attach_workspace` in the downstream job and read
+  the file with a plain `run` step.
+- **Branching which jobs run based on an upstream job's output** (a genuine workflow-level
+  conditional): CircleCI has no native construct for this. The closest real mechanism is a setup
+  workflow plus the
+  [`circleci/continuation`](https://circleci.com/developer/orbs/orb/circleci/continuation) orb,
+  where an early job computes a value and calls `continuation/continue` with a config whose
+  `workflows:` block is shaped by that value.
+
 ## Limits
 
 - **Bitbucket-hosted pipe references (`account/repo:tag`)**: this orb only runs `docker://`-style
@@ -322,6 +379,17 @@ for a default executor to fill.
   line in the file unconditionally (minus the reserved-name denylist above).
 - **One pipe per orb call**: by design (see "Scope" above). The underlying commands are layered
   so chaining could be added later without a breaking change, but that isn't built yet.
+- **Pipes that call the Bitbucket Cloud REST API against the *running pipeline itself*, not just
+  a generic cloud provider**: this orb runs a pipe's Docker image, but it never talks to
+  Bitbucket's own control plane, so a pipe that expects to reach back into Bitbucket's own
+  pipeline/runner APIs has no equivalent here. Two concrete, named examples (checked directly
+  against the real `bitbucketpipelines` Docker Hub catalog while researching this orb):
+  `bitbucket-clear-cache`/`clear-cache` (calls the Pipelines Caches API, scoped to a real running
+  Bitbucket pipeline's cache -- there is no equivalent to point it at here, the same shape as the
+  sibling `bitrise` orb's Save/Restore Cache Steps limitation) and `runners-autoscaler` (manages
+  Bitbucket's own self-hosted-runner fleet via the Cloud API -- categorically not something
+  running inside a CircleCI step can substitute for). `BITBUCKET_STEP_OIDC_TOKEN` above is the
+  same underlying gap in miniature.
 
 ## Commands and job reference
 

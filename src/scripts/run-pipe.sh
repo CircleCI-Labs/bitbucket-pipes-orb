@@ -14,6 +14,18 @@ is_true() {
     esac
 }
 
+# Nudge toward immutable pinning, mirroring the sibling buildkite-orb's identical warning for
+# an unpinned plugin #ref. A bare `bitbucketpipelines/aws-ecs-deploy` or an explicit `:1.15.0`
+# tag both float: the same config can pull different image content tomorrow with no diff in
+# this repo to review. Pinning by digest (image@sha256:...) is the only form that can never
+# move once published, so that's what this checks for specifically.
+case "${ORB_VAL_IMAGE}" in
+    *@sha256:*) ;;
+    *)
+        echo "WARNING: '${ORB_VAL_IMAGE}' is not pinned to a digest (@sha256:...). An image tag - including an explicit version tag - can be moved to point at different image content later with no change to this config. Pin by digest for a reproducible build, e.g. 'bitbucketpipelines/aws-ecs-deploy@sha256:<digest>' (find the digest with 'docker inspect --format {{.RepoDigests}} <image>' after a pull)." >&2
+        ;;
+esac
+
 WORKDIR="$(pwd)"
 
 # --- Ensure the bind-mount targets exist as the right kind of filesystem entry before Docker

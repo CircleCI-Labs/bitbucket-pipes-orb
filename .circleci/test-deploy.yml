@@ -490,6 +490,79 @@ jobs:
             fi
             echo "OK: registry login is invoked with --username/--password-stdin and the right server, with the password never appearing as a literal arg."
 
+  # Regression test (security review Finding #7, MEDIUM): run-pipe.sh never nudged toward
+  # immutable pinning the way the sibling buildkite-orb's fetch-plugin.sh already does for an
+  # unpinned plugin #ref. Confirms the new digest-pin warning fires for an unpinned image
+  # reference and stays silent once the image is pinned by digest.
+  test_run_pipe_digest_pin_warning:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: "An unpinned image reference (no @sha256:) triggers the digest-pin warning"
+          command: |
+            set -euo pipefail
+            fakebin="$(mktemp -d)"
+            printf '#!/bin/bash\ntrue\n' > "${fakebin}/docker"
+            chmod +x "${fakebin}/docker"
+            outdir="$(mktemp -d)"
+            output="$(PATH="${fakebin}:${PATH}" \
+              ORB_VAL_IMAGE="bitbucketpipelines/aws-ecs-deploy:1.15.0" \
+              ORB_VAL_VARIABLES="" \
+              ORB_VAL_CLONE_DIR="/opt/atlassian/pipelines/agent/build" \
+              ORB_VAL_OUTPUT_FILE="${outdir}/pipe-output.env" \
+              ORB_VAL_PIPE_STORAGE_DIR="${outdir}/storage" \
+              ORB_VAL_PIPE_SHARED_STORAGE_DIR="${outdir}/shared" \
+              ORB_VAL_USER="" \
+              ORB_VAL_FIX_PERMISSIONS="false" \
+              ORB_VAL_EXTRA_DOCKER_ARGS="" \
+              ORB_VAL_REGISTRY_USERNAME="BITBUCKET_PIPE_REGISTRY_USERNAME" \
+              ORB_VAL_REGISTRY_PASSWORD="BITBUCKET_PIPE_REGISTRY_PASSWORD" \
+              ORB_VAL_REGISTRY_SERVER="" \
+              bash src/scripts/run-pipe.sh 2>&1)"
+            case "${output}" in
+              *"WARNING"*"not pinned to a digest"*) ;;
+              *)
+                echo "FAIL: expected a digest-pin warning for an unpinned image, got:" >&2
+                echo "${output}" >&2
+                exit 1
+                ;;
+            esac
+            echo "OK: unpinned image reference triggered the digest-pin warning."
+      - run:
+          name: "An image pinned by digest (@sha256:) stays silent"
+          command: |
+            set -euo pipefail
+            fakebin="$(mktemp -d)"
+            printf '#!/bin/bash\ntrue\n' > "${fakebin}/docker"
+            chmod +x "${fakebin}/docker"
+            outdir="$(mktemp -d)"
+            output="$(PATH="${fakebin}:${PATH}" \
+              ORB_VAL_IMAGE="bitbucketpipelines/aws-ecs-deploy@sha256:0000000000000000000000000000000000000000000000000000000000000000" \
+              ORB_VAL_VARIABLES="" \
+              ORB_VAL_CLONE_DIR="/opt/atlassian/pipelines/agent/build" \
+              ORB_VAL_OUTPUT_FILE="${outdir}/pipe-output.env" \
+              ORB_VAL_PIPE_STORAGE_DIR="${outdir}/storage" \
+              ORB_VAL_PIPE_SHARED_STORAGE_DIR="${outdir}/shared" \
+              ORB_VAL_USER="" \
+              ORB_VAL_FIX_PERMISSIONS="false" \
+              ORB_VAL_EXTRA_DOCKER_ARGS="" \
+              ORB_VAL_REGISTRY_USERNAME="BITBUCKET_PIPE_REGISTRY_USERNAME" \
+              ORB_VAL_REGISTRY_PASSWORD="BITBUCKET_PIPE_REGISTRY_PASSWORD" \
+              ORB_VAL_REGISTRY_SERVER="" \
+              bash src/scripts/run-pipe.sh 2>&1)"
+            case "${output}" in
+              *"not pinned to a digest"*)
+                echo "FAIL: expected no digest-pin warning for a digest-pinned image, got:" >&2
+                echo "${output}" >&2
+                exit 1
+                ;;
+              *) ;;
+            esac
+            echo "OK: digest-pinned image reference stayed silent."
+
   # Genuinely complex/high-value target, per the release-readiness brief: a real,
   # published, credential-free Atlassian pipe (git-secrets-scan, wrapping the real
   # `gitleaks` security scanner) that reads this orb's own real BITBUCKET_CLONE_DIR
@@ -591,6 +664,8 @@ workflows:
           filters: *filters
       - test_registry_login_path:
           filters: *filters
+      - test_run_pipe_digest_pin_warning:
+          filters: *filters
       - test_git_secrets_scan_complex_target:
           filters: *filters
       # The orb must be re-packed for publishing, and saved to the workspace.
@@ -609,6 +684,7 @@ workflows:
             - test_extra_env_mapping_reserved_name_regression
             - test_pipe_idempotency
             - test_registry_login_path
+            - test_run_pipe_digest_pin_warning
             - test_git_secrets_scan_complex_target
       - orb-tools/publish:
           name: "Publish Dev"

@@ -10,7 +10,11 @@ parameters:
     description: >
       The pipe's Docker image reference, passed to `docker run` verbatim (e.g.
       `bitbucketpipelines/aws-ecs-deploy:1.15.0`). No version resolution is performed -- Docker's
-      own default (`:latest` when no tag is given) applies.
+      own default (`:latest` when no tag is given) applies. Pin by digest
+      (`bitbucketpipelines/aws-ecs-deploy@sha256:...`) for a reproducible build; any other form
+      (no tag, `:latest`, or an explicit version tag) can point at different image content later
+      with no diff in this config, and `run` prints a one-line warning to that effect when it
+      isn't pinned that way.
   variables:
     type: string
     default: ""
@@ -63,7 +67,11 @@ parameters:
     description: >
       Additional flags appended to the `docker run` invocation (e.g. `--network host --cap-add
       SYS_PTRACE`), before the image reference. Simple whitespace-split -- no quoting support
-      for values containing spaces.
+      for values containing spaces. `--network host` specifically: that collapses the pipe
+      container into the job VM's own network namespace, so it can then reach anything bound to
+      the job's own loopback (a mock server, a database the job started, a cloud metadata
+      endpoint) that it otherwise couldn't -- a real trust-boundary change, not just a
+      networking convenience.
   registry-username:
     type: env_var_name
     default: BITBUCKET_PIPE_REGISTRY_USERNAME
