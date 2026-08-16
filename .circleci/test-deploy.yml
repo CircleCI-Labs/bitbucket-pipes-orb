@@ -594,36 +594,39 @@ jobs:
             GITLEAKS_EXTRA_ARGS=.
 
   # Native-primary-container path, refusal side: preflight-native.sh run against REAL vendor
-  # images (not synthetic fixtures) with our script bind-mounted in and invoked via `docker run
-  # <image> sh /preflight-native.sh` from a `machine` executor that has real git/docker -- the
-  # same "docker run against a real image, from a machine executor that can checkout" pattern
-  # this repo's own test_git_secrets_scan_complex_target etc. already use. This sidesteps the
-  # chicken-and-egg problem of needing checkout (git) to get the script onto disk inside an image
-  # that (in two of the three real-image cases below) has no git of its own -- the vendor image
-  # here is only ever a `docker run` TARGET, never this job's own primary container.
+  # images (not synthetic fixtures, except where noted) with our script bind-mounted in and
+  # invoked via `docker run --entrypoint sh <image> /preflight-native.sh` from a `machine`
+  # executor that has real git/docker -- the same "docker run against a real image, from a
+  # machine executor that can checkout" pattern this repo's own
+  # test_git_secrets_scan_complex_target etc. already use. `--entrypoint sh` matters: every real
+  # image here bakes its own ENTRYPOINT, so a bare `docker run <image> sh script.sh` (no
+  # `--entrypoint`) appends `sh script.sh` as ARGS to the image's own entrypoint instead of
+  # replacing it -- caught for real the first time this ran in CI (see git history). This
+  # sidesteps the chicken-and-egg problem of needing checkout (git) to get the script onto disk
+  # inside an image that (in most cases below) has no git of its own -- the vendor image here is
+  # only ever a `docker run` TARGET, never this job's own primary container.
   #
-  # Three of the five images sampled during the design pass are covered here, each pinned to the
-  # exact refusal reason the design pass predicted:
-  #   - bitbucketpipelines/demo-pipe-bash:0.1.0: base tier (checkout: false) -> bash + BusyBox
-  #     tar, but zero CA certificates -> missing-ca-certificates
+  # RE-VERIFIED AGAINST THE REAL IMAGES WHILE BUILDING THIS TEST, NOT just taken on faith from the
+  # design pass that proposed them -- and reality has drifted since that pass ran:
   #   - plugins/s3 (borrowed from the sibling harness-orb's own five sampled images -- this
-  #     preflight check is generic container-tooling detection, not vendor-specific): base tier
-  #     -> no tar at all -> missing-tool: tar (fires before gzip/ca-cert, since tar is checked
-  #     first; "no tar, no gzip" per the design pass, so this is still a genuinely true refusal
-  #     reason, just not the ONLY one this image would fail)
-  #   - plugins/docker (also borrowed, same reasoning): docker-daemon-required, checked first and
-  #     unconditionally, regardless of which tools are otherwise present
-  # A fourth case -- checkout: true's git-missing branch -- is NOT exercised by any of the five
-  # sampled images: the only one with a base tier passing far enough to reach the git check
-  # (bitbucketpipelines/git-secrets-scan) already has git, and the other four all fail an earlier,
-  # unconditional check first (docker-daemon or ca-certificates/tar), so the git-missing message
-  # is provably unreachable through them. Covered instead with a purpose-built synthetic fixture
-  # (Alpine + tar/gzip/ca-certificates installed, git deliberately never installed) built on the
-  # fly, precisely to isolate that one branch. A fifth sampled image (plugins/slack, "no git, CA
-  # bundle is a stub") is deliberately NOT covered here -- demo-pipe-bash already exercises the
-  # identical missing-ca-certificates code path, and this repo has no other reason to depend on a
-  # Harness/Drone-flavored image; the sibling harness-orb's own test suite covers plugins/slack
-  # directly instead.
+  #     preflight check is generic container-tooling detection, not vendor-specific): still has
+  #     no tar at all -> missing-tool: tar, as predicted (fires before gzip/ca-cert).
+  #   - plugins/docker (also borrowed, same reasoning): still ships dockerd/dockerd-entrypoint.sh
+  #     -> docker-daemon-required, as predicted. Checked first and unconditionally.
+  #   - bitbucketpipelines/demo-pipe-bash:0.1.0: the design pass's "zero CA certificates" no
+  #     longer holds -- as of this writing it ships a real ~230KB /etc/ssl/cert.pem. It DOES
+  #     still lack git, though, so it's used here for the checkout: true git-missing branch
+  #     instead (a REAL image, not a fixture, for that branch).
+  #   - plugins/slack: same drift (its "CA bundle is a stub" call no longer holds either -- see
+  #     the sibling harness-orb, which covers plugins/slack directly with the identical
+  #     checkout: true git-missing branch instead).
+  # Net result: NEITHER of this repo's two Bitbucket-flavored sampled images currently
+  # demonstrates the missing-ca-certificates refusal -- both floated to real CA bundles since the
+  # design pass (exactly the risk the README's "Immutable pinning" section warns an unpinned
+  # `:latest` reference is exposed to). That branch is covered instead by a purpose-built
+  # synthetic fixture (Alpine with both known CA bundle files truncated to empty) built on the
+  # fly, documented here as a real, current gap rather than silently passed off as
+  # sampled-image coverage.
   test_preflight_native_refusals:
     machine:
       image: ubuntu-2404:current
@@ -631,29 +634,29 @@ jobs:
     steps:
       - checkout
       - run:
-          name: "demo-pipe-bash (checkout: false) -> refused for a stub/absent CA bundle, not a generic failure"
+          name: "demo-pipe-bash + checkout: true -> refused for missing git (CA bundle is fine as of this writing; see comment above)"
           command: |
             set -euo pipefail
             set +e
             output="$(docker run --rm --entrypoint sh -v "$(pwd)/src/scripts/preflight-native.sh:/preflight-native.sh:ro" \
-              -e ORB_VAL_CHECKOUT=false \
+              -e ORB_VAL_CHECKOUT=true \
               bitbucketpipelines/demo-pipe-bash:0.1.0 /preflight-native.sh 2>&1)"
             actual_exit=$?
             set -e
             echo "${output}"
             if [ "${actual_exit}" -eq 0 ]; then
-              echo "FAIL: expected preflight-native.sh to refuse demo-pipe-bash, but it exited 0" >&2
+              echo "FAIL: expected preflight-native.sh to refuse demo-pipe-bash with checkout: true, but it exited 0" >&2
               exit 1
             fi
             case "${output}" in
-              *"PREFLIGHT REFUSED (missing-ca-certificates): no usable CA certificate bundle was found"*) ;;
+              *"PREFLIGHT REFUSED (missing-tool: git): 'git' was not found in this image, but checkout: true was requested"*) ;;
               *)
-                echo "FAIL: expected the exact missing-ca-certificates refusal message, got:" >&2
+                echo "FAIL: expected the exact missing-tool: git refusal message, got:" >&2
                 echo "${output}" >&2
                 exit 1
                 ;;
             esac
-            echo "OK: bitbucketpipelines/demo-pipe-bash:0.1.0 refused with the missing-ca-certificates message."
+            echo "OK: bitbucketpipelines/demo-pipe-bash:0.1.0 refused with the missing-tool: git message."
       - run:
           name: "plugins/s3 (checkout: false) -> refused for missing tar, not a generic failure"
           command: |
@@ -703,36 +706,36 @@ jobs:
             esac
             echo "OK: plugins/docker refused with the docker-daemon-required message, distinct from a missing-tool message."
       - run:
-          name: "Synthetic fixture (tar/gzip/ca-certs OK, git absent) + checkout: true -> refused for missing git"
+          name: "Synthetic fixture (tar/gzip OK, CA bundle files truncated to empty) -> refused for missing CA certificates"
           command: |
             set -euo pipefail
             build_dir="$(mktemp -d)"
             {
               echo 'FROM alpine:3.20'
-              echo 'RUN apk add --no-cache tar gzip ca-certificates && update-ca-certificates'
+              echo 'RUN : > /etc/ssl/certs/ca-certificates.crt && : > /etc/ssl/cert.pem'
             } > "${build_dir}/Dockerfile"
-            docker build -t bitbucket-preflight-test-no-git:ci "${build_dir}"
+            docker build -t bitbucket-preflight-test-no-ca:ci "${build_dir}"
 
             set +e
             output="$(docker run --rm --entrypoint sh -v "$(pwd)/src/scripts/preflight-native.sh:/preflight-native.sh:ro" \
-              -e ORB_VAL_CHECKOUT=true \
-              bitbucket-preflight-test-no-git:ci /preflight-native.sh 2>&1)"
+              -e ORB_VAL_CHECKOUT=false \
+              bitbucket-preflight-test-no-ca:ci /preflight-native.sh 2>&1)"
             actual_exit=$?
             set -e
             echo "${output}"
             if [ "${actual_exit}" -eq 0 ]; then
-              echo "FAIL: expected preflight-native.sh to refuse the no-git fixture with checkout: true, but it exited 0" >&2
+              echo "FAIL: expected preflight-native.sh to refuse the no-CA fixture, but it exited 0" >&2
               exit 1
             fi
             case "${output}" in
-              *"PREFLIGHT REFUSED (missing-tool: git): 'git' was not found in this image, but checkout: true was requested"*) ;;
+              *"PREFLIGHT REFUSED (missing-ca-certificates): no usable CA certificate bundle was found"*) ;;
               *)
-                echo "FAIL: expected the exact missing-tool: git refusal message, got:" >&2
+                echo "FAIL: expected the exact missing-ca-certificates refusal message, got:" >&2
                 echo "${output}" >&2
                 exit 1
                 ;;
             esac
-            echo "OK: a base-tier-eligible image with no git was refused for checkout: true with the missing-tool: git message -- the branch none of the five sampled images can reach."
+            echo "OK: a base-tier-otherwise-eligible image with an emptied CA bundle was refused with the missing-ca-certificates message -- the branch neither of this repo's two Bitbucket-flavored sampled images can currently reach (see comment above)."
 
   # Native-primary-container path, working side: proves the whole chain (preflight-native ->
   # attach_workspace -> create-output-file -> map-env (reused UNMODIFIED) -> run-pipe-native ->

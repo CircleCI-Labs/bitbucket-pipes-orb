@@ -586,15 +586,27 @@ BusyBox `tar`/`gzip` (common on Alpine) is a **warning**, not a refusal -- Circl
 recommends GNU tar/gzip because BusyBox's variants have known incompatibilities that can silently
 corrupt `attach_workspace`/`persist_to_workspace` archives; the job still proceeds.
 
-Verified against the five images sampled while designing this path:
+Verified directly (`docker run --entrypoint sh <image>` against each real image, not taken on
+faith) against the five images sampled while designing this path -- and the results have
+**drifted** from that design pass for the two Bitbucket-flavored ones, confirmed while wiring up
+this repo's own CI:
 
-| Image | Preflight verdict | Why |
+| Image | Preflight verdict (checkout: false) | Why |
 |---|---|---|
 | `bitbucketpipelines/git-secrets-scan:3.2.0` | **Passes** | Has everything the custom-image guide requires; entrypoint `python3 /pipe.py`. The only one of the five this repo's own CI runs the full working path against. |
-| `plugins/docker` | Refused: `docker-daemon-required` | Ships `dockerd`/`dockerd-entrypoint.sh`, needs `$DOCKER_HOST`. |
-| `bitbucketpipelines/demo-pipe-bash:0.1.0` | Refused: `missing-ca-certificates` | Bash + BusyBox tar, but zero CA certificates. |
-| `plugins/slack` | Refused: `missing-ca-certificates` (also has no `git`) | CA bundle present but a stub. Covered by the sibling `harness-orb`'s own test suite, not this repo's. |
-| `plugins/s3` | Refused: `missing-tool: tar` (also has no `git`/`gzip`) | Fails the very first tool check. |
+| `plugins/docker` | Refused: `docker-daemon-required` | Ships `dockerd`/`dockerd-entrypoint.sh`, needs `$DOCKER_HOST`. Matches the design pass. |
+| `plugins/s3` | Refused: `missing-tool: tar` (also has no `git`/`gzip`) | Fails the very first tool check. Matches the design pass. |
+| `bitbucketpipelines/demo-pipe-bash:0.1.0` | **Passes** with `checkout: false`; refused (`missing-tool: git`) only with `checkout: true` | **Drifted from the design pass's "zero CA certificates" call** -- as of this writing it ships a real ~230KB `/etc/ssl/cert.pem`. It does still lack `git`, so this repo's own CI uses it (a real image, not a fixture) for the `checkout: true` missing-`git` branch instead. |
+| `plugins/slack` | **Passes** with `checkout: false` | **Also drifted** (its "CA bundle is a stub" call no longer holds either). Covered by the sibling `harness-orb`'s own test suite (using its own `checkout: true` git-missing branch), not this repo's. |
+
+That drift is exactly the risk "Immutable pinning" above warns about: neither Bitbucket-flavored
+sampled image was pinned by digest, so both floated to different real content between the design
+pass and this writing. **Net effect: neither of this repo's two Bitbucket-flavored sampled images
+currently demonstrates the `missing-ca-certificates` refusal.** That branch is still real code
+with a still-real test, just not one backed by a still-eligible sampled image; this repo's own CI
+covers it with a small synthetic fixture (Alpine with both known CA bundle file paths truncated
+to empty) built on the fly instead, documented as a real, current gap rather than silently passed
+off as sampled-image coverage.
 
 ### `attach_workspace` by default, `checkout` as opt-in
 
