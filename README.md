@@ -265,17 +265,20 @@ that path.
 
 ## Defaults that deviate from a bare `docker run`
 
-**None.** Every default this orb sets was checked against what a plain `docker run` (this orb's
-own execution mechanism -- there's no separate Bitbucket Pipelines CLI to compare against) or
-Bitbucket Pipelines' own documented default behavior would already do, and each one was found to
-already match rather than deviate: `user` is left empty (pipe containers run as root, matching
+| Parameter | Bitbucket Pipelines' own default | This orb's default | Why |
+|---|---|---|---|
+
+**No deviations found.** Every default this orb sets was checked against what a plain `docker run`
+(this orb's own execution mechanism -- there's no separate Bitbucket Pipelines CLI to compare
+against) or Bitbucket Pipelines' own documented default behavior would already do, and each one
+matches rather than deviates: `user` is left empty (pipe containers run as root, matching
 Bitbucket's own real-world behavior); `store-test-results` defaults to `true` because real
 Bitbucket Pipelines *also* auto-scans fixed JUnit-XML glob patterns by default, so this orb's
 default keeps the two platforms' out-of-the-box behavior aligned rather than introducing a
 difference; `clone-dir` defaults to the same path (`/opt/atlassian/pipelines/agent/build`) real
 Bitbucket Pipelines itself uses; and there is deliberately no `store-artifacts` default, matching
 Bitbucket's own lack of a fixed artifact directory (see just above). Nothing here was invented to
-fill out a table -- if a genuine deviation is added later, it belongs here.
+fill out the table -- if a genuine deviation is added later, it belongs there.
 
 **Matching Bitbucket Cloud's own default build-step tools, for a `pre-steps`/`post-steps` migrated
 from plain `script:` commands (not a Pipe):** if your old Bitbucket pipeline ran ordinary shell
