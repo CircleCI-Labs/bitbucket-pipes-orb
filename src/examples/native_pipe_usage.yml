@@ -1,0 +1,39 @@
+description: >
+  Run a pipe image as the job's OWN primary container instead of `docker run`-ing it from a
+  separate `machine` executor -- no bind mount, no `--user`/root-forcing, no fix-permissions
+  chown, and none of a `machine` VM's 30-60s boot. This only works for a pipe image that is
+  already tooling-complete for a CircleCI primary container (a shell plus tar/gzip/ca-certificates,
+  and git/ssh too if you opt into `checkout`); `preflight-native` verifies that first and refuses
+  an ineligible image with a specific reason before anything else runs. Defaults to
+  `attach_workspace` rather than `checkout` for exactly that reason: attaching a workspace an
+  earlier, ordinary job already checked out sidesteps the git/ssh/ca-certificates requirement on
+  the pipe's own image entirely. Uses the real, credential-free `bitbucketpipelines/git-secrets-scan`
+  pipe (verified eligible -- it ships everything the CircleCI custom-image guide requires),
+  scanning the attached workspace directly with `gitleaks` in `dir` mode.
+
+usage:
+  version: 2.1
+  orbs:
+    bitbucket: cci-labs/bitbucket@x.y.z
+  jobs:
+    build:
+      docker:
+        - image: cimg/base:current
+      steps:
+        - checkout
+        - persist_to_workspace:
+            root: .
+            paths: ["."]
+  workflows:
+    main:
+      jobs:
+        - build
+        - bitbucket/pipe-native:
+            requires: [build]
+            image: bitbucketpipelines/git-secrets-scan:3.2.0
+            entrypoint: python3 /pipe.py
+            workspace-root: /tmp/workspace
+            variables: |
+              CREATE_REPORT=false
+              GITLEAKS_COMMAND=dir
+              GITLEAKS_EXTRA_ARGS=/tmp/workspace

@@ -1,0 +1,87 @@
+description: >
+  Run ONE Bitbucket Pipe as a standalone job, using the pipe's OWN image as the job's primary
+  container (docker executor) instead of a separate `machine` executor running `docker run`. See
+  the `pipe-native` command's description and the README's "Native primary container" section for
+  the full mechanism and tradeoff. A SEPARATE job from `pipe` -- deliberately not a parameter flip
+  on it, so nobody lands in this narrower contract (no `--user`/root-forcing, no chaining a second
+  pipe image, image must pass `preflight-native`) by accident.
+
+parameters:
+  image:
+    type: string
+    description: >
+      The pipe's Docker image reference -- becomes the job's PRIMARY container. Same verbatim,
+      no-version-resolution contract as `pipe`'s `image` parameter.
+  resource-class:
+    type: string
+    default: medium
+    description: Resource class for the native executor.
+  entrypoint:
+    type: string
+    description: >
+      REQUIRED, no default. The pipe's real entrypoint command (e.g. `/pipe.sh`,
+      `python3 /pipe.py`). See the `pipe-native` command's parameter of the same name.
+  variables:
+    type: string
+    default: ""
+    description: The pipe's `variables:` block as multi-line KEY=value pairs.
+  checkout:
+    type: boolean
+    default: false
+    description: >
+      DEFAULT FALSE. See the `pipe-native` command's parameter of the same name -- leave false
+      and use `attach_workspace` (this job's default) unless you know the image can support a
+      real `checkout` (git + ssh present).
+  workspace-root:
+    type: string
+    default: .
+    description: >
+      Passed to `attach_workspace`'s `at` when `checkout` is false, to `map-env`'s `clone-dir`,
+      and as `store_test_results`'s scan path.
+  output-file:
+    type: string
+    default: /tmp/bitbucket-pipe-scratch/native-pipe-output.env
+    description: Host-side path for the pipe's output-variables file.
+  pipe-storage-dir:
+    type: string
+    default: /tmp/bitbucket-pipe-scratch/native-storage
+    description: Host-side scratch directory mapped to BITBUCKET_PIPE_STORAGE_DIR.
+  pipe-shared-storage-dir:
+    type: string
+    default: /tmp/bitbucket-pipe-scratch/native-shared-storage
+    description: Host-side scratch directory mapped to BITBUCKET_PIPE_SHARED_STORAGE_DIR.
+  skip-map-env:
+    type: boolean
+    default: false
+    description: Skip mapping CircleCI's build context onto BITBUCKET_* variables.
+  extra-env-mapping:
+    type: string
+    default: ""
+    description: Multi-line BITBUCKET_VAR=value pairs added on top of the built-in mapping.
+  store-test-results:
+    type: boolean
+    default: true
+    description: Automatically run `store_test_results` against `workspace-root` after the pipe.
+  step-name:
+    type: string
+    default: Run Bitbucket pipe (native primary container)
+    description: Name of the step that execs the pipe's entrypoint.
+
+executor:
+  name: native
+  image: << parameters.image >>
+  resource_class: << parameters.resource-class >>
+
+steps:
+  - pipe-native:
+      entrypoint: << parameters.entrypoint >>
+      variables: << parameters.variables >>
+      checkout: << parameters.checkout >>
+      workspace-root: << parameters.workspace-root >>
+      output-file: << parameters.output-file >>
+      pipe-storage-dir: << parameters.pipe-storage-dir >>
+      pipe-shared-storage-dir: << parameters.pipe-shared-storage-dir >>
+      skip-map-env: << parameters.skip-map-env >>
+      extra-env-mapping: << parameters.extra-env-mapping >>
+      store-test-results: << parameters.store-test-results >>
+      step-name: << parameters.step-name >>

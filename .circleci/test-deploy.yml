@@ -593,6 +593,162 @@ jobs:
             GITLEAKS_COMMAND=dir
             GITLEAKS_EXTRA_ARGS=.
 
+  # Native-primary-container path, refusal side: preflight-native.sh run against REAL vendor
+  # images (not synthetic fixtures) with our script bind-mounted in and invoked via `docker run
+  # <image> sh /preflight-native.sh` from a `machine` executor that has real git/docker -- the
+  # same "docker run against a real image, from a machine executor that can checkout" pattern
+  # this repo's own test_git_secrets_scan_complex_target etc. already use. This sidesteps the
+  # chicken-and-egg problem of needing checkout (git) to get the script onto disk inside an image
+  # that (in two of the three real-image cases below) has no git of its own -- the vendor image
+  # here is only ever a `docker run` TARGET, never this job's own primary container.
+  #
+  # Three of the five images sampled during the design pass are covered here, each pinned to the
+  # exact refusal reason the design pass predicted:
+  #   - bitbucketpipelines/demo-pipe-bash:0.1.0: base tier (checkout: false) -> bash + BusyBox
+  #     tar, but zero CA certificates -> missing-ca-certificates
+  #   - plugins/s3 (borrowed from the sibling harness-orb's own five sampled images -- this
+  #     preflight check is generic container-tooling detection, not vendor-specific): base tier
+  #     -> no tar at all -> missing-tool: tar (fires before gzip/ca-cert, since tar is checked
+  #     first; "no tar, no gzip" per the design pass, so this is still a genuinely true refusal
+  #     reason, just not the ONLY one this image would fail)
+  #   - plugins/docker (also borrowed, same reasoning): docker-daemon-required, checked first and
+  #     unconditionally, regardless of which tools are otherwise present
+  # A fourth case -- checkout: true's git-missing branch -- is NOT exercised by any of the five
+  # sampled images: the only one with a base tier passing far enough to reach the git check
+  # (bitbucketpipelines/git-secrets-scan) already has git, and the other four all fail an earlier,
+  # unconditional check first (docker-daemon or ca-certificates/tar), so the git-missing message
+  # is provably unreachable through them. Covered instead with a purpose-built synthetic fixture
+  # (Alpine + tar/gzip/ca-certificates installed, git deliberately never installed) built on the
+  # fly, precisely to isolate that one branch. A fifth sampled image (plugins/slack, "no git, CA
+  # bundle is a stub") is deliberately NOT covered here -- demo-pipe-bash already exercises the
+  # identical missing-ca-certificates code path, and this repo has no other reason to depend on a
+  # Harness/Drone-flavored image; the sibling harness-orb's own test suite covers plugins/slack
+  # directly instead.
+  test_preflight_native_refusals:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: "demo-pipe-bash (checkout: false) -> refused for a stub/absent CA bundle, not a generic failure"
+          command: |
+            set -euo pipefail
+            set +e
+            output="$(docker run --rm -v "$(pwd)/src/scripts/preflight-native.sh:/preflight-native.sh:ro" \
+              -e ORB_VAL_CHECKOUT=false \
+              bitbucketpipelines/demo-pipe-bash:0.1.0 sh /preflight-native.sh 2>&1)"
+            actual_exit=$?
+            set -e
+            echo "${output}"
+            if [ "${actual_exit}" -eq 0 ]; then
+              echo "FAIL: expected preflight-native.sh to refuse demo-pipe-bash, but it exited 0" >&2
+              exit 1
+            fi
+            case "${output}" in
+              *"PREFLIGHT REFUSED (missing-ca-certificates): no usable CA certificate bundle was found"*) ;;
+              *)
+                echo "FAIL: expected the exact missing-ca-certificates refusal message, got:" >&2
+                echo "${output}" >&2
+                exit 1
+                ;;
+            esac
+            echo "OK: bitbucketpipelines/demo-pipe-bash:0.1.0 refused with the missing-ca-certificates message."
+      - run:
+          name: "plugins/s3 (checkout: false) -> refused for missing tar, not a generic failure"
+          command: |
+            set -euo pipefail
+            set +e
+            output="$(docker run --rm -v "$(pwd)/src/scripts/preflight-native.sh:/preflight-native.sh:ro" \
+              -e ORB_VAL_CHECKOUT=false \
+              plugins/s3 sh /preflight-native.sh 2>&1)"
+            actual_exit=$?
+            set -e
+            echo "${output}"
+            if [ "${actual_exit}" -eq 0 ]; then
+              echo "FAIL: expected preflight-native.sh to refuse plugins/s3, but it exited 0" >&2
+              exit 1
+            fi
+            case "${output}" in
+              *"PREFLIGHT REFUSED (missing-tool: tar): 'tar' was not found in this image"*) ;;
+              *)
+                echo "FAIL: expected the exact missing-tool: tar refusal message, got:" >&2
+                echo "${output}" >&2
+                exit 1
+                ;;
+            esac
+            echo "OK: plugins/s3 refused with the missing-tool: tar message."
+      - run:
+          name: "plugins/docker -> refused for needing a Docker daemon, distinctly from a missing-tool case"
+          command: |
+            set -euo pipefail
+            set +e
+            output="$(docker run --rm -v "$(pwd)/src/scripts/preflight-native.sh:/preflight-native.sh:ro" \
+              -e ORB_VAL_CHECKOUT=false \
+              plugins/docker sh /preflight-native.sh 2>&1)"
+            actual_exit=$?
+            set -e
+            echo "${output}"
+            if [ "${actual_exit}" -eq 0 ]; then
+              echo "FAIL: expected preflight-native.sh to refuse plugins/docker, but it exited 0" >&2
+              exit 1
+            fi
+            case "${output}" in
+              *"PREFLIGHT REFUSED (docker-daemon-required): found"*"dockerd"*"expects a reachable Docker daemon via \$DOCKER_HOST"*) ;;
+              *)
+                echo "FAIL: expected the exact docker-daemon-required refusal message, got:" >&2
+                echo "${output}" >&2
+                exit 1
+                ;;
+            esac
+            echo "OK: plugins/docker refused with the docker-daemon-required message, distinct from a missing-tool message."
+      - run:
+          name: "Synthetic fixture (tar/gzip/ca-certs OK, git absent) + checkout: true -> refused for missing git"
+          command: |
+            set -euo pipefail
+            build_dir="$(mktemp -d)"
+            {
+              echo 'FROM alpine:3.20'
+              echo 'RUN apk add --no-cache tar gzip ca-certificates && update-ca-certificates'
+            } > "${build_dir}/Dockerfile"
+            docker build -t bitbucket-preflight-test-no-git:ci "${build_dir}"
+
+            set +e
+            output="$(docker run --rm -v "$(pwd)/src/scripts/preflight-native.sh:/preflight-native.sh:ro" \
+              -e ORB_VAL_CHECKOUT=true \
+              bitbucket-preflight-test-no-git:ci sh /preflight-native.sh 2>&1)"
+            actual_exit=$?
+            set -e
+            echo "${output}"
+            if [ "${actual_exit}" -eq 0 ]; then
+              echo "FAIL: expected preflight-native.sh to refuse the no-git fixture with checkout: true, but it exited 0" >&2
+              exit 1
+            fi
+            case "${output}" in
+              *"PREFLIGHT REFUSED (missing-tool: git): 'git' was not found in this image, but checkout: true was requested"*) ;;
+              *)
+                echo "FAIL: expected the exact missing-tool: git refusal message, got:" >&2
+                echo "${output}" >&2
+                exit 1
+                ;;
+            esac
+            echo "OK: a base-tier-eligible image with no git was refused for checkout: true with the missing-tool: git message -- the branch none of the five sampled images can reach."
+
+  # Native-primary-container path, working side: proves the whole chain (preflight-native ->
+  # attach_workspace -> create-output-file -> map-env (reused UNMODIFIED) -> run-pipe-native ->
+  # collect-outputs) end to end against the ONE sampled image verified fully eligible --
+  # bitbucketpipelines/git-secrets-scan:3.2.0, entrypoint `python3 /pipe.py` -- run as this job's
+  # actual primary container (the `bitbucket/native` executor), against a workspace persisted by
+  # an earlier, ordinary cimg/base job. No checkout inside the pipe's own image at all.
+  build_native_workspace:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - checkout
+      - persist_to_workspace:
+          root: .
+          paths: ["."]
+
 workflows:
   test-deploy:
     jobs:
@@ -668,6 +824,31 @@ workflows:
           filters: *filters
       - test_git_secrets_scan_complex_target:
           filters: *filters
+      - test_preflight_native_refusals:
+          filters: *filters
+      - build_native_workspace:
+          filters: *filters
+      - bitbucket/pipe-native:
+          name: "Test native primary container - git-secrets-scan against attached workspace"
+          requires: [build_native_workspace]
+          image: bitbucketpipelines/git-secrets-scan:3.2.0
+          entrypoint: python3 /pipe.py
+          workspace-root: /tmp/workspace
+          variables: |
+            CREATE_REPORT=false
+            GITLEAKS_COMMAND=dir
+            GITLEAKS_EXTRA_ARGS=/tmp/workspace
+          post-steps:
+            - run:
+                name: Assert map-env (reused unmodified) set BITBUCKET_CLONE_DIR to the attached workspace root
+                command: |
+                  set -euo pipefail
+                  if [ "${BITBUCKET_CLONE_DIR:-}" != "/tmp/workspace" ]; then
+                    echo "FAIL: expected BITBUCKET_CLONE_DIR=/tmp/workspace, got '${BITBUCKET_CLONE_DIR:-<unset>}'" >&2
+                    exit 1
+                  fi
+                  echo "OK: native primary-container path (preflight-native -> attach_workspace -> create-output-file -> map-env (unmodified) -> run-pipe-native -> collect-outputs -> store_test_results) ran end to end against a REAL image (bitbucketpipelines/git-secrets-scan:3.2.0, entrypoint 'python3 /pipe.py') as this job's own primary container, with BITBUCKET_CLONE_DIR correctly set to the attached workspace root."
+          filters: *filters
       # The orb must be re-packed for publishing, and saved to the workspace.
       - orb-tools/pack:
           filters: *filters
@@ -686,6 +867,8 @@ workflows:
             - test_registry_login_path
             - test_run_pipe_digest_pin_warning
             - test_git_secrets_scan_complex_target
+            - test_preflight_native_refusals
+            - "Test native primary container - git-secrets-scan against attached workspace"
       - orb-tools/publish:
           name: "Publish Dev"
           orb_name: cci-labs/bitbucket

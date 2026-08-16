@@ -1,0 +1,37 @@
+description: >
+  Execs the pipe's real entrypoint as an ordinary `run:` step inside the job's own primary
+  container (the pipe's own image) -- no `docker run`, no bind mount, no `--user`, no
+  fix-permissions chown. `variables:` are exported directly into this step's own process (not
+  `$BASH_ENV`), preserving the exact same "pipe-only, never a later native step" scoping real
+  Bitbucket variables have in the docker-run path. See `scripts/run-pipe-native.sh` for the full
+  mechanism and why it -- unlike `map-env` -- does NOT drop in unmodified from the docker-run path.
+
+parameters:
+  entrypoint:
+    type: string
+    description: >
+      REQUIRED, no default. The pipe's real entrypoint command (e.g. `/pipe.sh`,
+      `python3 /pipe.py`) -- vendor-chosen and arbitrary, so omitting this is a config-validation
+      error rather than a runtime guess: it cannot be auto-detected from inside a docker-executor
+      primary container (no Docker daemon here to `docker inspect` with). Find it in the pipe's
+      own Dockerfile/documentation, or `docker run --rm --entrypoint cat <image> /pipe.yml`.
+  variables:
+    type: string
+    default: ""
+    description: >
+      The pipe's `variables:` block as multi-line KEY=value pairs, using Bitbucket's own literal
+      variable-naming convention -- identical format/rules to the `run-pipe` command's `variables`
+      parameter (bracket-list arrays flattened the same way), except these are exported directly
+      into this step's own process rather than passed via `docker run -e`.
+  step-name:
+    type: string
+    default: Run Bitbucket pipe (native primary container)
+    description: Name of the step that execs the pipe's entrypoint.
+
+steps:
+  - run:
+      name: << parameters.step-name >>
+      environment:
+        ORB_VAL_ENTRYPOINT: << parameters.entrypoint >>
+        ORB_VAL_VARIABLES: << parameters.variables >>
+      command: <<include(scripts/run-pipe-native.sh)>>

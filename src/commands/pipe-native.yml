@@ -1,0 +1,117 @@
+description: >
+  Run ONE Bitbucket Pipe by using the pipe's OWN image as the job's primary container (the docker
+  executor) instead of `docker run`-ing it from a separate `machine` executor. CircleCI ignores
+  the primary container's own ENTRYPOINT/CMD and runs `steps:` inside the already-live container,
+  so this execs the pipe's real entrypoint directly: no bind mount, no `docker run`, no
+  fix-permissions chown, and (per-second billing) no `machine`-executor VM boot. In exchange: no
+  `--user`/root-forcing support, no second pipe image in the same job (the container is fixed for
+  the job's lifetime), and it only works for a pipe image that is already tooling-complete for a
+  CircleCI primary container -- `preflight-native` runs FIRST and refuses an ineligible image
+  outright, before checkout/attach_workspace, rather than letting the job break confusingly
+  partway through. See the README's "Native primary container" section for the full tradeoff,
+  including why this is a SEPARATE job/command from `pipe`/`bitbucket/pipe`, never a parameter
+  flip on it.
+
+parameters:
+  entrypoint:
+    type: string
+    description: >
+      REQUIRED, no default. The pipe's real entrypoint command (e.g. `/pipe.sh`,
+      `python3 /pipe.py`) -- vendor-chosen and arbitrary; cannot be auto-detected from inside a
+      docker-executor primary container (no Docker daemon here to `docker inspect` with). Find it
+      in the pipe's own Dockerfile/documentation, or `docker run --rm --entrypoint cat <image> /pipe.yml`.
+  variables:
+    type: string
+    default: ""
+    description: >
+      The pipe's `variables:` block as multi-line KEY=value pairs -- identical format/rules to the
+      `pipe` command's `variables` parameter.
+  checkout:
+    type: boolean
+    default: false
+    description: >
+      DEFAULT FALSE, unlike `pipe`. Checking out with `checkout` needs git/ssh in the primary
+      container, on top of the base tar/gzip/ca-certificates tier every invocation needs --
+      `preflight-native` enforces the stricter tier only when this is true. Leave false (the
+      default) and use `attach_workspace` instead -- attach a workspace persisted by an earlier,
+      ordinary `cimg/base`-executor job that ran `checkout` -- to sidestep the git/ssh/ca-certs
+      requirement on the pipe's own image entirely. See the README.
+  workspace-root:
+    type: string
+    default: .
+    description: >
+      Passed to `attach_workspace`'s `at` when `checkout` is false (the default), to `map-env`'s
+      `clone-dir` (so `BITBUCKET_CLONE_DIR` reflects the REAL, unmounted path -- there is no bind
+      mount to remap here), and as `store_test_results`'s scan path.
+  output-file:
+    type: string
+    default: /tmp/bitbucket-pipe-scratch/native-pipe-output.env
+    description: Host-side path for the pipe's output-variables file.
+  pipe-storage-dir:
+    type: string
+    default: /tmp/bitbucket-pipe-scratch/native-storage
+    description: Host-side scratch directory mapped to BITBUCKET_PIPE_STORAGE_DIR.
+  pipe-shared-storage-dir:
+    type: string
+    default: /tmp/bitbucket-pipe-scratch/native-shared-storage
+    description: Host-side scratch directory mapped to BITBUCKET_PIPE_SHARED_STORAGE_DIR.
+  skip-map-env:
+    type: boolean
+    default: false
+    description: >
+      Skip mapping CircleCI's build context onto BITBUCKET_* variables. Most pipes -- even
+      "credential-free" ones -- read at least BITBUCKET_REPO_OWNER and crash without it.
+  extra-env-mapping:
+    type: string
+    default: ""
+    description: >
+      Multi-line BITBUCKET_VAR=value pairs to add on top of, or override entries in, the
+      built-in CIRCLE_*->BITBUCKET_* mapping -- identical to the `pipe` command's parameter of the
+      same name (passed straight through to the reused, unmodified `map-env` command).
+  store-test-results:
+    type: boolean
+    default: true
+    description: >
+      Automatically run `store_test_results` against `workspace-root` after the pipe -- same
+      rationale as the `pipe` command's parameter of the same name, just scanning the attached
+      workspace/checkout root instead of always `.` (which is only correct here when
+      `workspace-root` is left at its default of `.`).
+  step-name:
+    type: string
+    default: Run Bitbucket pipe (native primary container)
+    description: Name of the step that execs the pipe's entrypoint.
+
+steps:
+  - preflight-native:
+      checkout: << parameters.checkout >>
+  - when:
+      condition: << parameters.checkout >>
+      steps:
+        - checkout
+  - unless:
+      condition: << parameters.checkout >>
+      steps:
+        - attach_workspace:
+            at: << parameters.workspace-root >>
+  - create-output-file:
+      output-file: << parameters.output-file >>
+      pipe-storage-dir: << parameters.pipe-storage-dir >>
+      pipe-shared-storage-dir: << parameters.pipe-shared-storage-dir >>
+  - when:
+      condition:
+        not: << parameters.skip-map-env >>
+      steps:
+        - map-env:
+            clone-dir: << parameters.workspace-root >>
+            extra-env-mapping: << parameters.extra-env-mapping >>
+  - run-pipe-native:
+      entrypoint: << parameters.entrypoint >>
+      variables: << parameters.variables >>
+      step-name: << parameters.step-name >>
+  - collect-outputs:
+      output-file: << parameters.output-file >>
+  - when:
+      condition: << parameters.store-test-results >>
+      steps:
+        - store_test_results:
+            path: << parameters.workspace-root >>
