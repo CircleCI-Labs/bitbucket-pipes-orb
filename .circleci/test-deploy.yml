@@ -635,9 +635,9 @@ jobs:
           command: |
             set -euo pipefail
             set +e
-            output="$(docker run --rm -v "$(pwd)/src/scripts/preflight-native.sh:/preflight-native.sh:ro" \
+            output="$(docker run --rm --entrypoint sh -v "$(pwd)/src/scripts/preflight-native.sh:/preflight-native.sh:ro" \
               -e ORB_VAL_CHECKOUT=false \
-              bitbucketpipelines/demo-pipe-bash:0.1.0 sh /preflight-native.sh 2>&1)"
+              bitbucketpipelines/demo-pipe-bash:0.1.0 /preflight-native.sh 2>&1)"
             actual_exit=$?
             set -e
             echo "${output}"
@@ -659,9 +659,9 @@ jobs:
           command: |
             set -euo pipefail
             set +e
-            output="$(docker run --rm -v "$(pwd)/src/scripts/preflight-native.sh:/preflight-native.sh:ro" \
+            output="$(docker run --rm --entrypoint sh -v "$(pwd)/src/scripts/preflight-native.sh:/preflight-native.sh:ro" \
               -e ORB_VAL_CHECKOUT=false \
-              plugins/s3 sh /preflight-native.sh 2>&1)"
+              plugins/s3 /preflight-native.sh 2>&1)"
             actual_exit=$?
             set -e
             echo "${output}"
@@ -683,9 +683,9 @@ jobs:
           command: |
             set -euo pipefail
             set +e
-            output="$(docker run --rm -v "$(pwd)/src/scripts/preflight-native.sh:/preflight-native.sh:ro" \
+            output="$(docker run --rm --entrypoint sh -v "$(pwd)/src/scripts/preflight-native.sh:/preflight-native.sh:ro" \
               -e ORB_VAL_CHECKOUT=false \
-              plugins/docker sh /preflight-native.sh 2>&1)"
+              plugins/docker /preflight-native.sh 2>&1)"
             actual_exit=$?
             set -e
             echo "${output}"
@@ -714,9 +714,9 @@ jobs:
             docker build -t bitbucket-preflight-test-no-git:ci "${build_dir}"
 
             set +e
-            output="$(docker run --rm -v "$(pwd)/src/scripts/preflight-native.sh:/preflight-native.sh:ro" \
+            output="$(docker run --rm --entrypoint sh -v "$(pwd)/src/scripts/preflight-native.sh:/preflight-native.sh:ro" \
               -e ORB_VAL_CHECKOUT=true \
-              bitbucket-preflight-test-no-git:ci sh /preflight-native.sh 2>&1)"
+              bitbucket-preflight-test-no-git:ci /preflight-native.sh 2>&1)"
             actual_exit=$?
             set -e
             echo "${output}"
