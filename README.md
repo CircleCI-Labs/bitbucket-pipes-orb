@@ -59,7 +59,9 @@ private images, array variables, and pre/post-step interleaving.
      the very next native step can use it like any other CircleCI-set environment variable.
 - These four are separate, composable commands specifically so you can call them yourself with
   native steps in between, and so a future version could chain more than one pipe per job without
-  a breaking change. `pipe` is just the common case, pre-assembled.
+  a breaking change. `pipe` is just the common case, pre-assembled. See
+  [`docs/ROADMAP.md`](docs/ROADMAP.md)'s "Command-split decisions" for the full reasoning, and item
+  1 for why that chaining isn't built yet.
 - Runs on a `machine` executor. **Not** `docker` + `setup_remote_docker` -- see
   ["Limits"](#limits) for why.
 
@@ -83,11 +85,9 @@ specifically because this orb's whole point is running third-party, potentially 
 images with literal, unprefixed variable names.
 
 **No vendor convenience-image executor here either, checked and deliberately skipped.** Every
-Bitbucket Pipe is already its own purpose-built image -- `run-pipe` just `docker run`s it, same
-structural story as the sibling `harness` orb. Atlassian's own `atlassian/default-image` (the
-*outer* Bitbucket Cloud build-step container, not something a Pipe runs inside) doesn't fix
-anything here since this orb never executes user code in that outer layer -- see "Test results
-and artifacts" and "Limits" for the two places a real difference *does* show up.
+Bitbucket Pipe is already its own purpose-built image -- `run-pipe` just `docker run`s it. See
+[`docs/ROADMAP.md`](docs/ROADMAP.md)'s "Vendor-image layering" for the full reasoning, and "Test
+results and artifacts" and "Limits" below for the two places a real difference *does* show up.
 
 ## Mapping your existing config
 
@@ -263,6 +263,20 @@ you know the specific pipe you're running deposits real output files at a predic
 the checkout, add your own `store_artifacts` step (or `post-steps:` on the `pipe` job) pointed at
 that path.
 
+## Defaults that deviate from a bare `docker run`
+
+**None.** Every default this orb sets was checked against what a plain `docker run` (this orb's
+own execution mechanism -- there's no separate Bitbucket Pipelines CLI to compare against) or
+Bitbucket Pipelines' own documented default behavior would already do, and each one was found to
+already match rather than deviate: `user` is left empty (pipe containers run as root, matching
+Bitbucket's own real-world behavior); `store-test-results` defaults to `true` because real
+Bitbucket Pipelines *also* auto-scans fixed JUnit-XML glob patterns by default, so this orb's
+default keeps the two platforms' out-of-the-box behavior aligned rather than introducing a
+difference; `clone-dir` defaults to the same path (`/opt/atlassian/pipelines/agent/build`) real
+Bitbucket Pipelines itself uses; and there is deliberately no `store-artifacts` default, matching
+Bitbucket's own lack of a fixed artifact directory (see just above). Nothing here was invented to
+fill out a table -- if a genuine deviation is added later, it belongs here.
+
 **Matching Bitbucket Cloud's own default build-step tools, for a `pre-steps`/`post-steps` migrated
 from plain `script:` commands (not a Pipe):** if your old Bitbucket pipeline ran ordinary shell
 commands in Bitbucket Cloud's default container *around* a Pipe -- not the Pipe itself, which
@@ -315,15 +329,8 @@ The `default` executor's `docker_layer_caching` parameter (off by default) enabl
 Docker Layer Caching for the `machine` executor's Docker daemon. **This is an opt-in, billed
 feature, gated by your CircleCI plan** -- see
 [CircleCI's Docker Layer Caching docs](https://circleci.com/docs/docker-layer-caching/) for
-current plan eligibility and pricing. Rule of thumb for whether it's worth turning on: the vast
-majority of real `bitbucketpipelines/*` images are well under 70MB (`demo-pipe-bash` is 4MB,
-`git-secrets-scan` 51MB, `slack-notify` 54MB, `aws-cloudformation-deploy` 69MB -- checked
-directly against Docker Hub) and pull in low single-digit seconds; DLC's own fixed overhead
-plausibly exceeds that, so leave it off for these. Larger images (several hundred MB to multi-GB
--- browser/ML/Android-class pipes) are where DLC's per-layer reuse starts to pay off over a full
-`docker pull` every run. There's no separate `docker save`/`load` caching mechanism in this orb
-on top of DLC -- it would be redundant with, and strictly worse than (all-or-nothing per exact
-tag, vs. DLC's per-layer reuse), a feature that already ships.
+current plan eligibility and pricing. See [`docs/ROADMAP.md`](docs/ROADMAP.md)'s "Image caching
+economics" for the rule of thumb on when it's actually worth turning on.
 
 ## Passing pipe output across jobs
 
@@ -339,7 +346,8 @@ the same workflow. Two real, native CircleCI mechanisms cover this without any o
   workflow plus the
   [`circleci/continuation`](https://circleci.com/developer/orbs/orb/circleci/continuation) orb,
   where an early job computes a value and calls `continuation/continue` with a config whose
-  `workflows:` block is shaped by that value.
+  `workflows:` block is shaped by that value. See [`docs/ROADMAP.md`](docs/ROADMAP.md)'s
+  "Workspace / parallelism fit" for why this wasn't built as an orb feature.
 
 ## Limits
 
@@ -347,21 +355,21 @@ the same workflow. Two real, native CircleCI mechanisms cover this without any o
   image references, passed to `docker run` verbatim, per this project's locked design decision to
   do zero image-resolution of its own. Point `image:` at the pipe's real Docker image (check its
   `pipe.yml` `image:` field, or run `docker run --rm --entrypoint cat <image> /pipe.yml` against
-  any candidate image to read its baked-in metadata).
+  any candidate image to read its baked-in metadata). See [`docs/ROADMAP.md`](docs/ROADMAP.md)
+  item 4.
 - **`BITBUCKET_STEP_OIDC_TOKEN`**: no CircleCI equivalent exists, and none is synthesized (unlike
   the identity UUIDs above, a fake token would be actively misleading, not just a placeholder). A
   pipe that authenticates to AWS/GCP via Bitbucket's OIDC federation cannot do so through this
   bridge -- give it long-lived credentials via `variables:`/CircleCI contexts instead, if the pipe
-  supports that.
+  supports that. See [`docs/ROADMAP.md`](docs/ROADMAP.md) item 3.
 - **`BITBUCKET_DEPLOYMENT_ENVIRONMENT` / `BITBUCKET_DEPLOYMENT_ENVIRONMENT_UUID`**: no CircleCI
   concept maps onto Bitbucket's deployment environments, so these are left unset rather than
-  guessed. Set them yourself via `extra-env-mapping` if a pipe needs a specific value.
+  guessed. Set them yourself via `extra-env-mapping` if a pipe needs a specific value. See
+  [`docs/ROADMAP.md`](docs/ROADMAP.md) item 3.
 - **A `docker` executor**: CircleCI's `docker` executor with `setup_remote_docker` runs its Docker
   daemon in a separate remote VM with no filesystem shared with the job -- bind mounts silently
-  don't work there, and CircleCI's own docs point you at `docker cp` instead. Making that work
-  for this orb would mean copying the whole checkout into the remote environment before the pipe
-  runs and copying the workspace and outputs back out afterward -- a slower, materially riskier
-  second code path we have not built or verified. Only `machine` is supported; use it.
+  don't work there, and CircleCI's own docs point you at `docker cp` instead. Only `machine` is
+  supported; use it. See [`docs/ROADMAP.md`](docs/ROADMAP.md) item 2 for the full reasoning.
 - **Root-owned files from the pipe container**: pipe containers run as root by default (matching
   Bitbucket's own real-world behavior). On a real Linux `machine` executor this can leave
   root-owned files in your checkout that break later native steps -- set `fix-permissions: true`
@@ -378,7 +386,8 @@ the same workflow. Two real, native CircleCI mechanisms cover this without any o
   pipeline; this orb enforces no equivalent limit of its own -- `collect-outputs` exports every
   line in the file unconditionally (minus the reserved-name denylist above).
 - **One pipe per orb call**: by design (see "Scope" above). The underlying commands are layered
-  so chaining could be added later without a breaking change, but that isn't built yet.
+  so chaining could be added later without a breaking change, but that isn't built yet -- see
+  [`docs/ROADMAP.md`](docs/ROADMAP.md) item 1.
 - **Pipes that call the Bitbucket Cloud REST API against the *running pipeline itself*, not just
   a generic cloud provider**: this orb runs a pipe's Docker image, but it never talks to
   Bitbucket's own control plane, so a pipe that expects to reach back into Bitbucket's own
@@ -509,7 +518,9 @@ orb's env mapping and output handling are built from.
 ## How to Contribute
 
 We welcome [issues](https://github.com/CircleCI-Labs/bitbucket-pipes-orb/issues) and [pull
-requests](https://github.com/CircleCI-Labs/bitbucket-pipes-orb/pulls) against this repository!
+requests](https://github.com/CircleCI-Labs/bitbucket-pipes-orb/pulls) against this repository! See
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for items deliberately scoped out of past passes, with the
+reasoning recorded rather than lost.
 
 **CircleCI CLI version floor: `>= 1.0.48254`.** Older CLI builds silently pack this orb's
 `<<include(...)>>` directives as literal text instead of expanding them, producing a broken orb
