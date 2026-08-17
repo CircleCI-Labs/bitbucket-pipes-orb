@@ -53,6 +53,19 @@ is_orb_reserved_container_var() {
 # Identical bracket-list parser to run-pipe.sh's parse_bracket_list -- see that script's own
 # comment for the exact syntax/limitations (a comma inside a quoted item is still treated as an
 # item separator; this is a plain split, not a full YAML/JSON parser).
+#
+# This duplication (this function plus ORB_RESERVED_CONTAINER_VARS/is_orb_reserved_container_var
+# above, and the KEY/VALUE parsing loop below) is verbatim-copied from run-pipe.sh, not shared via
+# a common include: a published orb command's `command:` is inlined, self-contained script text
+# with no sibling-file filesystem to `source` from at runtime, and orb-tools/pack rejects more
+# than one such include directive in a single YAML scalar, so neither the obvious runtime-source
+# fix nor the obvious multi-include fix is available here. The real fix -- a canonical file plus
+# a sync-embedded-*.sh generator plus a CI job asserting that regenerating from it produces no
+# diff -- was considered and deliberately deferred as a separate, more invasive pass rather than
+# folded into the coverage-gap fix that added test_variables_native_reserved_name_and_array_regression
+# (.circleci/test-deploy.yml): that test now gives this copy the same regression coverage
+# run-pipe.sh's copy already had, so a future edit to one without the other fails CI on whichever
+# side didn't get updated, rather than drifting silently.
 parse_bracket_list() {
     local raw="$1" inner item trimmed
     inner="${raw#\[}"

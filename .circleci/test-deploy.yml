@@ -322,6 +322,105 @@ jobs:
             esac
             echo "OK: the reserved-name denylist, malformed-line skip, invalid-identifier skip, and bracket-list flattening all behaved correctly."
 
+  # Gap-closing test (release-readiness audit): run-pipe-native.sh's own comments say it
+  # duplicates run-pipe.sh's bracket-list flattening and reserved-name denylist parsing
+  # VERBATIM, but only run-pipe.sh had a dedicated regression test for that logic (the job
+  # above). The native copy was exercised only for plain KEY=value lines elsewhere in this
+  # suite, so the array/malformed-line/reserved-name edge cases were untested on it -- a bug
+  # introduced only in the native copy (the two are separate files, not a shared include) would
+  # have shipped silently. Mirrors the job above battery-for-battery (same five input lines:
+  # a reserved name, a malformed line, an invalid identifier, a bracket-list array, and a
+  # well-formed line), but the assertion mechanism has to differ because the two scripts have
+  # different sinks: run-pipe.sh builds a `docker run` argv (asserted there via a fake `docker`
+  # shim recording its own argv), while run-pipe-native.sh `export`s straight into ITS OWN
+  # process before exec'ing `entrypoint` as its child (see that script's header comment on why
+  # this is the one piece that does NOT drop in unmodified from the docker-run path). So this
+  # exercises run-pipe-native.sh directly and points `entrypoint` at a small `sh -c` one-liner
+  # that echoes back exactly the variables under test -- deliberately not a full `env` dump,
+  # which would also capture this test's own ORB_VAL_VARIABLES/ORB_VAL_ENTRYPOINT input strings
+  # and produce false-positive substring matches (e.g. "1BAD" appearing merely because it was
+  # PART OF the ORB_VAL_VARIABLES value, not because the script actually exported it) --
+  # confirmed empirically while writing this test.
+  test_variables_native_reserved_name_and_array_regression:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Regression test (native path) - reserved-name denylist, malformed lines, and bracket-list flattening
+          command: |
+            set -euo pipefail
+            # Stands in for the value map-env.sh (reused unmodified in the native path) would
+            # already have exported into $BASH_ENV before run-pipe-native.sh's own step runs --
+            # proves the denylist SKIPS the colliding 'variables:' line (preserving this) rather
+            # than crashing or letting the line's value win.
+            export BITBUCKET_CLONE_DIR="/opt/atlassian/pipelines/agent/build"
+
+            # Only echoes the specific variables under test, deliberately not a full `env` dump
+            # -- see the job comment above for why. Single-quoted here so $VAR is passed through
+            # literally for the INNER sh -c (spawned by run-pipe-native.sh) to expand, not
+            # evaluated by this outer shell while building the string.
+            entrypoint='echo GOT_CLONE_DIR=$BITBUCKET_CLONE_DIR; echo GOT_CAPS_COUNT=$CAPS_COUNT; echo GOT_CAPS_0=$CAPS_0; echo GOT_CAPS_1=$CAPS_1; echo GOT_NAME=$NAME'
+
+            # Identical battery to test_variables_reserved_name_and_array_regression above: a
+            # reserved orb-managed name, a malformed line (no '='), an invalid identifier, a
+            # bracket-list array, and a well-formed line. Built via `printf '%s\n'` (each arg on
+            # its own real line) for the same reason as that job -- see its comment.
+            output="$(ORB_VAL_ENTRYPOINT="${entrypoint}" \
+              ORB_VAL_VARIABLES="$(printf '%s\n' 'BITBUCKET_CLONE_DIR=/evil' 'malformedlinenoequals' '1BAD=value' "CAPS=['A', 'B']" 'NAME=x')" \
+              bash src/scripts/run-pipe-native.sh 2>&1)"
+            echo "${output}"
+
+            case "${output}" in
+              *"GOT_CLONE_DIR=/evil"*)
+                echo "FAIL: the reserved 'BITBUCKET_CLONE_DIR' variables: line overrode the pre-existing value in the entrypoint's own environment instead of being skipped:" >&2
+                echo "${output}" >&2
+                exit 1
+                ;;
+            esac
+            case "${output}" in
+              *"GOT_CLONE_DIR=/opt/atlassian/pipelines/agent/build"*) ;;
+              *)
+                echo "FAIL: expected the pre-existing BITBUCKET_CLONE_DIR (standing in for map-env's own export) to survive untouched in the entrypoint's environment:" >&2
+                echo "${output}" >&2
+                exit 1
+                ;;
+            esac
+            case "${output}" in
+              *"GOT_CAPS_COUNT=2"*"GOT_CAPS_0=A"*"GOT_CAPS_1=B"*) ;;
+              *)
+                echo "FAIL: expected the bracket list CAPS=['A', 'B'] to flatten into CAPS_COUNT=2/CAPS_0=A/CAPS_1=B and reach the entrypoint's own environment:" >&2
+                echo "${output}" >&2
+                exit 1
+                ;;
+            esac
+            case "${output}" in
+              *"Warning: skipping malformed 'variables' line (no '=')"*"malformedlinenoequals"*) ;;
+              *)
+                echo "FAIL: expected a warning naming the malformed 'malformedlinenoequals' line:" >&2
+                echo "${output}" >&2
+                exit 1
+                ;;
+            esac
+            case "${output}" in
+              *"Warning: skipping 'variables' line with an invalid variable name"*"1BAD=value"*) ;;
+              *)
+                echo "FAIL: expected a warning naming the invalid-identifier '1BAD=value' line:" >&2
+                echo "${output}" >&2
+                exit 1
+                ;;
+            esac
+            case "${output}" in
+              *"GOT_NAME=x"*) ;;
+              *)
+                echo "FAIL: expected the well-formed 'NAME=x' variables: line to reach the entrypoint's environment:" >&2
+                echo "${output}" >&2
+                exit 1
+                ;;
+            esac
+            echo "OK: run-pipe-native.sh's reserved-name denylist, malformed-line skip, invalid-identifier skip, and bracket-list flattening all behaved correctly -- the native copy of this logic is now covered exactly like the docker-run original above."
+
   # Regression test: map-env.sh's RESERVED_SHELL_VAR_NAMES denylist -- an extra-env-mapping
   # line naming PATH/BASH_ENV/etc must be warned-and-skipped, not exported, since every
   # later native step in the job sources $BASH_ENV.
@@ -817,6 +916,8 @@ workflows:
           filters: *filters
       - test_variables_reserved_name_and_array_regression:
           filters: *filters
+      - test_variables_native_reserved_name_and_array_regression:
+          filters: *filters
       - test_extra_env_mapping_reserved_name_regression:
           filters: *filters
       - test_pipe_idempotency:
@@ -865,6 +966,7 @@ workflows:
             - command_usage_inline
             - test_pipe_failure_propagation
             - test_variables_reserved_name_and_array_regression
+            - test_variables_native_reserved_name_and_array_regression
             - test_extra_env_mapping_reserved_name_regression
             - test_pipe_idempotency
             - test_registry_login_path
