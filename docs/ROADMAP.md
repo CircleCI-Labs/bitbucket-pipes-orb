@@ -97,19 +97,47 @@ Four cross-cutting questions came up while auditing this orb against its `cci-la
 was already answered somewhere in this orb's design; this section is where that reasoning lives
 now, instead of being spread across README prose a user has to hunt for.
 
-### Image caching economics
+### Image caching economics (measured, 2026-08)
 
-The `default` executor's `docker_layer_caching` parameter defaults to **off**. The vast majority of
-real `bitbucketpipelines/*` images are well under 70MB (`demo-pipe-bash` is 4MB, `git-secrets-scan`
-51MB, `slack-notify` 54MB, `aws-cloudformation-deploy` 69MB, checked directly against Docker Hub
-while researching this orb) and pull in low single-digit seconds; DLC's own fixed overhead
-plausibly exceeds that, so it isn't worth turning on for these. Larger images (several hundred MB
-to multi-GB: browser/ML/Android-class pipes) are where DLC's per-layer reuse starts to pay off over
-a full `docker pull` every run. There's no separate `docker save`/`load` caching mechanism in this
-orb on top of DLC. It would be redundant with, and strictly worse than (all-or-nothing per exact
-tag, versus DLC's per-layer reuse), a feature that already ships. This is also a plan-gated, billed
-CircleCI feature; check plan eligibility before relying on it. See [LIMITS.md](LIMITS.md)'s
-"Caching the pipe image" section for the current user-facing guidance.
+The `default` executor's `docker_layer_caching` parameter defaults to **off**, and this was
+measured on real CircleCI rather than left as the rule-of-thumb guess this section used to make
+(small images not worth it, large ones "should" pay off). Per the CircleCI Labs orb-family
+caching-defaults standard (a cache defaults to `true` only where it measurably speeds up
+execution, paid features included; see the sibling `act-orb`'s
+[ROADMAP.md item 10](https://github.com/CircleCI-Labs/act-orb/blob/main/docs/ROADMAP.md) for the
+full statement of the rule), `docker_layer_caching` is exactly the kind of paid feature that
+should default `true` if the evidence supports it -- so it was tested against
+`bitbucketpipelines/aws-ecs-deploy:1.15.0` (~68.5MB, the largest of the real `bitbucketpipelines/*`
+images sampled while researching this orb and already used elsewhere in this orb's own
+test-deploy.yml).
+
+**What was measured:** two independent CircleCI pipeline runs on a branch, each pulling
+`aws-ecs-deploy:1.15.0` once with `docker_layer_caching: false` and once with
+`docker_layer_caching: true` (job numbers 833-834 and 862-863 on
+`CircleCI-Labs/bitbucket-pipes-orb`):
+
+| | DLC off | DLC on |
+|---|---|---|
+| Run 1 pull step | 4.49s | 4.22s |
+| Run 2 pull step | 4.00s | 4.17s |
+| DLC's own overhead | -- | +2.0s "Spin up environment" + 1.4s "DLC Teardown" |
+
+**The result:** DLC produced **no measurable pull-time improvement** across two separate pipeline
+runs on the same branch/image -- the second run (which should be the one that benefits from any
+cross-run layer reuse) was statistically indistinguishable from the first and from the
+`docker_layer_caching: false` runs. DLC also adds ~3.4s of its own fixed spin-up/teardown overhead
+per job that a plain pull never pays, on top of being a billed, plan-gated feature. Read plainly:
+DLC appears to cache `docker build` layer output, not layers pulled from a registry via a plain
+`docker pull` of an already-built image -- which is exactly this orb's own workload (`docker
+run`-ing a pre-built vendor pipe image; this orb never builds one). `docker_layer_caching` stays
+`false` by this measurement, including for the largest real pipe image sampled, correcting the
+previous, untested assumption in this section that size alone would tip the balance. There's no
+separate `docker save`/`load` caching mechanism in this orb; building one would only add the exact
+same registry-pull-vs-cache-pull tradeoff the sibling `act-orb` measured and rejected for its own
+`cache-images` parameter (see the link above). See [LIMITS.md](LIMITS.md)'s "Caching the pipe
+image" section for the current user-facing guidance. `docker_layer_caching` remains available as
+an opt-in for anyone whose own pipe image or network conditions differ from what was measured
+here.
 
 ### Command-split decisions
 

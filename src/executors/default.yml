@@ -24,6 +24,14 @@ parameters:
       Enables CircleCI's Docker Layer Caching between builds. This is the orb's only image-pull
       caching mechanism -- there is no separate CLI binary to download and cache here, unlike
       other CI-ecosystem-bridge orbs, so no save_cache/restore_cache commands are shipped.
+      Defaults to false, measured rather than assumed: against
+      bitbucketpipelines/aws-ecs-deploy:1.15.0 (~68.5MB, the largest real pipe image sampled for
+      this orb), two independent real-CircleCI runs showed no measurable pull-time improvement
+      from DLC, while DLC itself added ~3.4s of spin-up/teardown overhead on top of its billed,
+      plan-gated cost. See docs/ROADMAP.md's "Image caching economics" section for the measured
+      numbers and job references, and docs/LIMITS.md's "Caching the pipe image" section for
+      user-facing guidance. Available as an opt-in if your own pipe image or network conditions
+      differ from what was measured.
 
 machine:
   image: << parameters.image >>
