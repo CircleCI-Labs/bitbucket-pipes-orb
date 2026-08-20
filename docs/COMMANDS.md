@@ -91,10 +91,28 @@ and why it needs a preflight check, and [LIMITS.md](LIMITS.md) for what it gives
 | `run-pipe-native` | command | Execs `entrypoint` as an ordinary `run:` step, with `variables:` exported directly into that step's own process. |
 | `native` | executor | `docker` executor whose primary container is the pipe's own `image`. |
 
-`pipe-native`'s `entrypoint` parameter has no default (see ARCHITECTURE.md for why). Every other
-parameter mirrors `pipe`'s equivalent under the same name, with `checkout` defaulting to `false`
-here (mirrored, not the same value) instead of `true`, and `clone-dir` renamed to
-`workspace-root` to make clear it's now a real, unmounted path rather than a bind-mount target.
+### `pipe-native` (command and job) parameters
+
+| Parameter | Type | Default | What it does |
+|---|---|---|---|
+| `image` *(job only)* | string | *(required)* | The pipe's Docker image reference, becomes the job's primary container. Same verbatim, no-version-resolution contract as `pipe`'s `image` parameter. |
+| `resource-class` *(job only)* | string | `medium` | Resource class for the native executor. |
+| `entrypoint` | string | *(required)* | The pipe's real entrypoint command (for example `/pipe.sh`, `python3 /pipe.py`), vendor-chosen and arbitrary; cannot be auto-detected from inside a docker-executor primary container (no Docker daemon there to `docker inspect` with). Find it in the pipe's own Dockerfile/documentation, or `docker run --rm --entrypoint cat <image> /pipe.yml`. See [ARCHITECTURE.md](ARCHITECTURE.md#why-entrypoint-is-required-with-no-default) for why it has no default. |
+| `variables` | string | `""` | The pipe's `variables:` block as multi-line `KEY=VALUE` pairs, identical format/rules to the `pipe` command's `variables` parameter. |
+| `checkout` | boolean | `false` | Check out the project first. Defaults to `false` here (mirrored, not the same value as `pipe`'s `true`): leave it false and use `attach_workspace` against `workspace-root` unless the pipe's own image already has git/ssh/ca-certs, the stricter tier `preflight-native` enforces only when this is `true`. |
+| `workspace-root` | string | `.` | Passed to `attach_workspace`'s `at` when `checkout` is `false` (the default), to `map-env`'s `clone-dir` (so `BITBUCKET_CLONE_DIR` reflects the real, unmounted path, there is no bind mount to remap here), and as `store_test_results`'s scan path. Renamed from `clone-dir` on `pipe` to make clear it's a real, unmounted path rather than a bind-mount target. |
+| `output-file` | string | `/tmp/bitbucket-pipe-scratch/native-pipe-output.env` | Host-side path for the pipe's output-variables file. |
+| `pipe-storage-dir` | string | `/tmp/bitbucket-pipe-scratch/native-storage` | Host-side scratch directory mapped to `BITBUCKET_PIPE_STORAGE_DIR`. |
+| `pipe-shared-storage-dir` | string | `/tmp/bitbucket-pipe-scratch/native-shared-storage` | Host-side scratch directory mapped to `BITBUCKET_PIPE_SHARED_STORAGE_DIR`. |
+| `skip-map-env` | boolean | `false` | Skip mapping CircleCI's build context onto `BITBUCKET_*` variables. Most pipes, even credential-free ones, read at least `BITBUCKET_REPO_OWNER` and crash without it. |
+| `extra-env-mapping` | string | `""` | Multi-line `BITBUCKET_VAR=value` pairs added on top of (and overriding) the built-in mapping, identical to the `pipe` command's parameter of the same name. |
+| `store-test-results` | boolean | `true` | Automatically run `store_test_results` against `workspace-root` after the pipe, same rationale as `pipe`'s parameter of the same name, just scanning the attached workspace/checkout root instead of always `.`. |
+| `step-name` | string | `Run Bitbucket pipe (native primary container)` | Name of the step that execs the pipe's entrypoint. |
+
+Individual commands (`preflight-native`, `run-pipe-native`) expose the matching subset of these
+parameters under the same names; `map-env` is reused unmodified. See each command's own
+description on the [Orb Registry page](https://circleci.com/developer/orbs/orb/cci-labs/bitbucket)
+for the exhaustive, always-current list.
 
 This is a separate job/command from `pipe`/`bitbucket/pipe`, deliberately, never a parameter flip
 on the existing one, so nobody lands in this narrower contract (no `--user`, one image per job,
