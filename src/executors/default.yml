@@ -21,17 +21,19 @@ parameters:
     type: boolean
     default: false
     description: >
-      Enables CircleCI's Docker Layer Caching between builds. This is the orb's only image-pull
-      caching mechanism -- there is no separate CLI binary to download and cache here, unlike
-      other CI-ecosystem-bridge orbs, so no save_cache/restore_cache commands are shipped.
-      Defaults to false, measured rather than assumed: against
-      bitbucketpipelines/aws-ecs-deploy:1.15.0 (~68.5MB, the largest real pipe image sampled for
-      this orb), two independent real-CircleCI runs showed no measurable pull-time improvement
-      from DLC, while DLC itself added ~3.4s of spin-up/teardown overhead on top of its billed,
-      plan-gated cost. See docs/ROADMAP.md's "Image caching economics" section for the measured
-      numbers and job references, and docs/LIMITS.md's "Caching the pipe image" section for
-      user-facing guidance. Available as an opt-in if your own pipe image or network conditions
-      differ from what was measured.
+      Enables CircleCI's Docker Layer Caching. DLC caches `docker build` layer output; it is not
+      a cache for `docker pull`. This orb never builds an image (it only `docker run`s a
+      pre-built vendor pipe image), so DLC has nothing of its own to cache here -- confirmed by
+      measurement, not just mechanism: against bitbucketpipelines/aws-ecs-deploy:1.15.0
+      (~68.5MB, the largest real pipe image sampled for this orb), two independent real-CircleCI
+      runs showed no measurable pull-time improvement from DLC, while DLC itself added ~3.4s of
+      spin-up/teardown overhead on top of its billed, plan-gated cost. Defaults to false
+      accordingly; there is also no separate save_cache/restore_cache image-pull caching
+      mechanism in this orb, since it would face the identical tradeoff. See
+      docs/ROADMAP.md's "Image caching economics" section for the measured numbers and job
+      references, and docs/LIMITS.md's "Caching the pipe image" section for user-facing
+      guidance, including the one case (your own `pre-steps`/`post-steps` building an image)
+      where DLC would genuinely help.
 
 machine:
   image: << parameters.image >>

@@ -145,15 +145,25 @@ Pinning is recommended, not required.
 ## Caching the pipe image
 
 The `default` executor's `docker_layer_caching` parameter (off by default) enables CircleCI's
-Docker Layer Caching for the `machine` executor's Docker daemon. It stays off by default:
+Docker Layer Caching for the `machine` executor's Docker daemon. DLC caches the layers a `docker
+build` produces; it is a cache for building an image, not for pulling one. It can incidentally
+speed up a pull when the target image's layers already happen to be present and unchanged from an
+earlier build on the same host, but that is not what the feature is for and it is not something to
+rely on. This orb never builds an image: `run-pipe`/`run-pipe.sh` only `docker run`s the
+vendor-published pipe image verbatim (relying on Docker's own implicit pull when the image isn't
+already local; see [ARCHITECTURE.md](ARCHITECTURE.md)), so there is no build step here for DLC to
+cache -- which is exactly why it stays off by default, and why measurement bears that out:
 measured on real CircleCI against `bitbucketpipelines/aws-ecs-deploy:1.15.0` (~68.5MB, the
 largest real pipe image sampled for this orb), it produced no measurable improvement to a repeat
 pipe-image pull across two independent pipeline runs, while adding its own ~3.4s of
 spin-up/teardown overhead plus its billed, plan-gated cost -- see [ROADMAP.md](ROADMAP.md)'s
-"Image caching economics" section for the full numbers and job references. It remains available
-as an opt-in for anyone whose own pipe image or network conditions differ from what was measured;
-see [CircleCI's Docker Layer Caching docs](https://circleci.com/docs/docker-layer-caching/) for
-current plan eligibility and pricing.
+"Image caching economics" section for the full numbers and job references. The one way DLC could
+matter for a job using this orb is if your own `pre-steps` or `post-steps` (accepted by every
+CircleCI 2.1+ job, including `pipe`/`pipe-native`; see the README) run a real `docker build` of
+your own -- that is what DLC is built for, and it sits entirely outside what this orb itself does.
+It remains available as an opt-in for anyone whose own build steps, pipe image, or network
+conditions differ from what was measured; see [CircleCI's Docker Layer Caching
+docs](https://circleci.com/docs/docker-layer-caching/) for current plan eligibility and pricing.
 
 ## Preflight verification drift (native path)
 
