@@ -17,7 +17,7 @@ CircleCI Labs, including this repo, is a collection of solutions developed by me
 CircleCI's field engineering teams through our engagement with various customer needs.
 
 -   ✅ Created by engineers @ CircleCI
--   ⚠️ **Not yet used by production CircleCI customers.** This orb is currently dev-published only. What *is* verified: a real, credential-free pipe (`bitbucketpipelines/git-secrets-scan`, a genuine gitleaks scan) runs green in this repo's own CI, including a real CircleCI-checkout incompatibility this orb's own test discovered and worked around (`GITLEAKS_COMMAND=dir`, see `.circleci/test-deploy.yml`).
+-   ⚠️ **Not yet used by production CircleCI customers.** This orb is newly published, with no production track record yet. What *is* verified: a real, credential-free pipe (`bitbucketpipelines/git-secrets-scan`, a genuine gitleaks scan) runs green in this repo's own CI, including a real CircleCI-checkout incompatibility this orb's own test discovered and worked around (`GITLEAKS_COMMAND=dir`, see `.circleci/test-deploy.yml`).
 -   ❌ **not** officially supported by CircleCI support
 
 ---
